@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pybullet as p
 
-from robot_sim.planner import KukaOmplPlanner
+from robot_sim.planner import KukaOmplPlanner, interpolate_joint_line
 
 
 def load_config(path: str | Path):
@@ -17,7 +17,11 @@ def load_config(path: str | Path):
 
 def run_unpack(planner: KukaOmplPlanner):
     print("[Demo] Unpacking a foldable box with 4 flaps ...")
-    planner.unpack_box()
+    for i in range(4):
+        planner.open_flap_with_ompl(i)
+        interp_to_grasp = interpolate_joint_line(planner.get_current_config(), planner.home_config, 60)
+        planner.execute_joint_trajectory_real(interp_to_grasp, 0.1)
+        print(f"Flap {i} opened.")
 
 
 def run_pick_place(planner: KukaOmplPlanner, cfg: dict):
