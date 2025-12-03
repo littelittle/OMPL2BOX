@@ -17,7 +17,7 @@ def load_config(path: str | Path):
 
 def run_unpack(planner: KukaOmplPlanner):
     print("[Demo] Unpacking a foldable box with 4 flaps ...")
-    for i in range(4):
+    for i in range(3, -1, -1):
         planner.open_flap_with_ompl(i)
         interp_to_grasp = interpolate_joint_line(planner.get_current_config(), planner.home_config, 60)
         planner.execute_joint_trajectory_real(interp_to_grasp, 0.1)
