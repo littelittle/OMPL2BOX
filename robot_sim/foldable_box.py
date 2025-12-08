@@ -145,7 +145,7 @@ class FoldableBox:
         elif flap_id == 2:    # +y 边
             hinge_local = [0.0, hy, hz]
             axis_local = [-1.0, 0.0, 0.0]  # 绕 -x 转
-        else:                 # flap_id == 3, -y 边
+        else:                 # -y 边
             hinge_local = [0.0, -hy, hz]
             axis_local = [1.0, 0.0, 0.0]   # 绕 +x 转
 

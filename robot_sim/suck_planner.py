@@ -9,7 +9,7 @@ from ompl import geometric as og
 
 from .foldable_box import FoldableBox
 from .utils.vector import quat_from_normal_and_axis
-from .utils.path import interpolate_joint_line
+from .utils.path import interpolate_joint_line, draw_point
 
 class KukaOmplPlanner:
     """
@@ -41,7 +41,7 @@ class KukaOmplPlanner:
         self.lower_limits: List[float] = []
         self.upper_limits: List[float] = []
         self.rest_pose: List[float] = []
-        self.box_attached: int = -2 # i.e. -1 is the base, 0~3 are flaps, -2 means none
+        self.box_attached: int = -2 # explain: -1 is the base, 0~3 are flaps, -2 means none
         self.ee_link_index: int = -1
         self.box_constraint_id: Optional[int] = None
         self.ee_contact_offset = [0.0, 0.0, 0.05] # the offset from end-effector link frame to suction cup tip
@@ -51,14 +51,14 @@ class KukaOmplPlanner:
         self.ndof = len(self.joint_indices)
         self.home_config = [0.0] * self.ndof
 
-        # 控制相关参数（你可以按需要调整）
-        self.control_dt = 1.0 / 240.0  # 单步仿真时间
-        self.segment_duration = 0.01    # 每个 OMPL waypoint 用多少秒走完
-        self.max_torque = 700.0         # 每个关节的最大力矩（牛米左右，可根据机器人调大/调小）
-        self.position_gain = 0.2       # 位置环增益
-        self.velocity_gain = 1.0       # 速度环增益
+        # ---------- Controller setup ----------
+        self.control_dt = 1.0 / 400.0  
+        self.segment_duration = 0.01    #  the time duration to move between two waypoints
+        self.max_torque = 700.0        
+        self.position_gain = 0.2       # Using PD position control
+        self.velocity_gain = 1.0       
 
-        # 物理引擎迭代次数可以调高一点，让约束更稳定
+        # ---------- PyBullet setup ----------
         p.setPhysicsEngineParameter(
             numSolverIterations=50,
             physicsClientId=self.cid,
@@ -103,9 +103,12 @@ class KukaOmplPlanner:
                 self.lower_limits.append(ll)
                 self.upper_limits.append(ul)
                 self.rest_pose.append(0.0)
-                self.ee_link_index = j
+                self.ee_link_index = 6 # the last active joint is the end-effector link
 
     def set_robot_config(self, q: List[float]):
+        '''
+        set the robot joint configuration directly to q in the simulation
+        '''
         assert len(q) == self.ndof
         for i, joint_index in enumerate(self.joint_indices):
             p.resetJointState(
@@ -158,6 +161,7 @@ class KukaOmplPlanner:
 
         return True
 
+    # ---------- Controller ----------
     def _set_joint_targets_position_control(self, q_target: List[float]):
         """给所有关节设置 position control 目标，不做 stepSimulation。"""
         assert len(q_target) == self.ndof
@@ -175,7 +179,7 @@ class KukaOmplPlanner:
             )
 
     # ---------- OMPL planning ----------
-    def plan(self, q_start: List[float], q_goal: List[float], timeout: float = 3.0):
+    def plan(self, q_start: List[float], q_goal: List[float], timeout: float = 3.0, num_waypoints=1000):
         assert len(q_start) == self.ndof and len(q_goal) == self.ndof
 
         def clamp_and_warn(name, q):
@@ -214,7 +218,7 @@ class KukaOmplPlanner:
             return None
 
         path = pdef.getSolutionPath()
-        path.interpolate(1000)
+        path.interpolate(num_waypoints)
         print("[OMPL] path length (in joint space):", path.length())
         return path
 
@@ -236,6 +240,7 @@ class KukaOmplPlanner:
         dt: float = None,
         segment_duration: float = None,
         interpolate: bool = False,
+        DRAW_DEBUG_LINES: bool = False,
     ):
         """用 position control 执行 OMPL 规划出来的关节轨迹。
 
@@ -244,6 +249,8 @@ class KukaOmplPlanner:
         - segment_duration: 每两个 waypoint 之间走多久（秒）
         - interpolate: 是否在两个 waypoint 之间做线性插值
         """
+        # import time
+        # start_time = time.time()
         if path is None:
             return
 
@@ -253,6 +260,7 @@ class KukaOmplPlanner:
             segment_duration = self.segment_duration
 
         steps_per_segment = max(1, int(segment_duration / dt))
+        num_states = path.getStateCount()
 
         print(
             "[PyBullet] executing trajectory with",
@@ -262,31 +270,42 @@ class KukaOmplPlanner:
             "steps per segment",
         )
 
-        # 当前关节配置（从仿真里读，而不是假定从0开始）
+        if DRAW_DEBUG_LINES:
+            q_backup = self.get_current_config()
+            ee_positions = []
+
+            for i in range(num_states):
+                state = path.getState(i)
+                q = [float(state[j]) for j in range(self.ndof)]
+
+                self.set_robot_config(q)
+
+                link_state = p.getLinkState(
+                    self.robot_id,
+                    self.ee_link_index,
+                    physicsClientId=self.cid,
+                )
+                ee_pos = link_state[0]  # the world position of end-effector link
+                ee_positions.append(ee_pos)
+
+            self.set_robot_config(q_backup)
+
+            for i in range(len(ee_positions) - 1):
+                p.addUserDebugLine(
+                    ee_positions[i],
+                    ee_positions[i + 1],
+                    [1, 0, 0],      # 红色
+                    lineWidth=5,
+                    lifeTime=100,
+                    physicsClientId=self.cid,
+                )
+
         q_curr = self.get_current_config()
 
-        # 对 OMPL 路径的每个 waypoint 依次执行
         for i in range(path.getStateCount()):
             print("[PyBullet] moving to waypoint", i + 1, "/", path.getStateCount())
             state = path.getState(i)
             q_next = [float(state[j]) for j in range(self.ndof)]
-
-            # # visualization
-            # p.addUserDebugLine(state, path.getState(i+1), [1, 0, 0], 3, lifeTime=10)
-
-            if i < path.getStateCount() - 1:
-                state_next = path.getState(i + 1)
-                q_next2 = [float(state_next[j]) for j in range(self.ndof)]
-                from_xyz = q_next[:3]
-                to_xyz   = q_next2[:3]
-                p.addUserDebugLine(
-                    from_xyz,
-                    to_xyz,
-                    [1, 0, 0],
-                    3,
-                    lifeTime=10,
-                    physicsClientId=self.cid,
-                )
 
             # 在 q_curr -> q_next 之间走 steps_per_segment 步
             for k in range(steps_per_segment):
@@ -309,6 +328,9 @@ class KukaOmplPlanner:
 
             # 段结束，更新当前 q
             q_curr = q_next
+        # time_elapsed = time.time() - start_time
+        # print(f"[PyBullet] trajectory execution finished in {time_elapsed:.3f} seconds")
+        # import ipdb; ipdb.set_trace()
 
     def execute_joint_trajectory(self, qs: List[List[float]], dt: float = 1.0 / 240.0):
         for q in qs:
@@ -381,29 +403,15 @@ class KukaOmplPlanner:
         ee_pos = [contact_pos[i] - offset_world[i] for i in range(3)]
         return ee_pos, contact_orn
 
-    def solve_ik(self, pos, orn):
-        ik = p.calculateInverseKinematics(
-            self.robot_id,
-            self.ee_link_index,
-            pos,
-            orn,
-            lowerLimits=self.lower_limits,
-            upperLimits=self.upper_limits,
-            jointRanges=[u - l for l, u in zip(self.lower_limits, self.upper_limits)],
-            restPoses=self.rest_pose,
-            physicsClientId=self.cid,
-        )
-        return list(ik[: self.ndof])
-
-    def solve_ik_collision_aware(self, pos, orn, max_trials=2000):
+    def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=2000):
         import random
         base_rest = self.rest_pose[:]
 
         for t in range(max_trials):
-            if t == 1:
+            if t == 0:
                 rest = base_rest
             else:
-                # 在 rest pose 上加一点扰动
+                # add some noise to the rest pose 
                 rest = [
                     r + random.uniform(-1, 1) for r in base_rest
                 ]
@@ -421,15 +429,18 @@ class KukaOmplPlanner:
             )
             q_candidate = list(ik[: self.ndof])
 
-            if self.is_state_valid(q_candidate):
-                print("[IK] found collision-free IK solution in trial", t)
+            if self.is_state_valid(q_candidate) or not collision:
+                if not collision:
+                    print("[IK] found collision-free IK solution in trial", t)
+                else:
+                    print("[IK] found IK(not sure if collision free!) solution in trial", t)
                 # import ipdb; ipdb.set_trace()
                 return q_candidate
         print("[IK] failed to find collision-free IK solution after", max_trials, "trials")
         import ipdb; ipdb.set_trace()
         return None 
 
-    def move_to_pose(self, pos, orn, timeout: float = 4.0, real=True, debug=False):
+    def move_to_pose(self, pos, orn, timeout: float = 4.0, real=True, debug=False, num_waypoints=1000):
         q_start = self.get_current_config()
         q_goal = self.solve_ik_collision_aware(pos, orn)
 
@@ -460,7 +471,7 @@ class KukaOmplPlanner:
                 p.stepSimulation()
             return None
 
-        path = self.plan(q_start, q_goal, timeout=timeout) 
+        path = self.plan(q_start, q_goal, timeout=timeout, num_waypoints=num_waypoints) 
         if path is not None:
             if debug:
                 for i in range(path.getStateCount()):
@@ -476,105 +487,57 @@ class KukaOmplPlanner:
                 self.execute_path(path)
         return path
 
-    # ---------- grasp helpers ----------
-    def attach_box(self):
-        if self.box_constraint_id is not None:
-            return
-        self.box_constraint_id = p.createConstraint(
-            parentBodyUniqueId=self.robot_id,
-            parentLinkIndex=self.ee_link_index,
-            childBodyUniqueId=self.box_id,
-            childLinkIndex=-1,
-            jointType=p.JOINT_FIXED,
-            jointAxis=[0, 0, 0],
-            parentFramePosition=[0, 0, 0],
-            childFramePosition=[0, 0, 0],
+    def get_ee_contact_offset(self, flap_id):
+        contacts = p.getContactPoints(
+            bodyA=self.robot_id,
+            bodyB=self.box_id,
+            linkIndexA=self.ee_link_index,
+            linkIndexB=flap_id,
             physicsClientId=self.cid,
         )
-        self.box_attached = True
+        if contacts:
+            # positionOnA/worldspace
+            if len(contacts) > 1:
+                print(f"[WARN] multiple contact points found between ee link and flap {flap_id}, using the first one")
+            contact_world = contacts[0][5]
+        else:
+            print(f"[WARN] no contact point found between ee link and flap {flap_id}, using default offset")
+            return self.ee_contact_offset
+        
+        ee_state = p.getLinkState(
+            self.robot_id,
+            self.ee_link_index,
+            physicsClientId=self.cid,
+        )
+        ee_pos, ee_orn = ee_state[4], ee_state[5]
 
-    def detach_box(self):
-        if self.box_constraint_id is not None:
-            p.removeConstraint(self.box_constraint_id, physicsClientId=self.cid)
-        self.box_constraint_id = None
-        self.box_attached = False
+        inv_ee_pos, inv_ee_orn = p.invertTransform(ee_pos, ee_orn)
+
+        parentFramePosition, _ = p.multiplyTransforms(
+            inv_ee_pos,
+            inv_ee_orn,
+            contact_world,
+            [0, 0, 0, 1],
+        )
+
+        return parentFramePosition
 
     # ---------- tasks ----------
-    def pick_and_place(self, box_pos, place_pos):
-        box_z = box_pos[2]
-        place_z = place_pos[2]
-        approach_h = 0.25
-
-        p.resetBasePositionAndOrientation(
-            self.box_id,
-            box_pos,
-            p.getQuaternionFromEuler([0, 0, 0]),
-            physicsClientId=self.cid,
-        )
-
-        self.set_robot_config(self.home_config)
-        for _ in range(120):
-            p.stepSimulation(physicsClientId=self.cid)
-            time.sleep(1.0 / 240.0)
-
-        grasp_orn = p.getQuaternionFromEuler([math.pi, 0, 0])
-        q_start = self.get_current_config()
-        q_pick_above = self.solve_ik(
-            [box_pos[0], box_pos[1], box_z + approach_h], grasp_orn
-        )
-        path1 = self.plan(q_start, q_pick_above, timeout=5.0)
-        if path1 is None:
-            print("[Demo] failed to find path to pick position")
-            return
-        self.execute_path(path1)
-
-        q_grasp = self.solve_ik([box_pos[0], box_pos[1], box_z + 0.05], grasp_orn)
-        interp_to_grasp = interpolate_joint_line(self.get_current_config(), q_grasp, 60)
-        self.execute_joint_trajectory(interp_to_grasp)
-        self.attach_box()
-
-        q_place_above = self.solve_ik(
-            [place_pos[0], place_pos[1], place_z + approach_h], grasp_orn
-        )
-        path2 = self.plan(self.get_current_config(), q_place_above, timeout=5.0)
-        if path2 is None:
-            print("[Demo] failed to find path to place position")
-            return
-        self.execute_path(path2)
-
-        q_place = self.solve_ik([place_pos[0], place_pos[1], place_z + 0.05], grasp_orn)
-        interp_to_place = interpolate_joint_line(self.get_current_config(), q_place, 60)
-        self.execute_joint_trajectory(interp_to_place)
-
-        self.detach_box()
-        p.resetBasePositionAndOrientation(
-            self.box_id,
-            [place_pos[0], place_pos[1], place_z],
-            p.getQuaternionFromEuler([0, 0, 0]),
-            physicsClientId=self.cid,
-        )
-        for _ in range(120):
-            p.stepSimulation(physicsClientId=self.cid)
-            time.sleep(1.0 / 240.0)
-
     def open_flap_with_ompl(
         self,
         flap_id: int,
         target_angle_deg: float = 90.0,
-        approach_dist: float = 0.06,
+        approach_dist: float = 0.00,
         timeout: float = 4.0,
     ):
         """
-        示例：利用几何 + OMPL 打开某个 flap 到指定角度。
-        流程：
+        利用几何 + OMPL 打开某个 flap 到指定角度。
           1) 通过几何接口算出 flap 在 angle=0 和 angle=target_angle 时关键点 & 法向；
           2) 先从当前姿态规划到“接近关键点”的姿态；
           3) 直接插值下压/贴合关键点（模拟吸附）；
           4) （可选）创建 P2P 约束把 flap 铰接到末端；
-          5) 将 flap 视作已 attach，在关节空间规划到目标关键点对应的末端 pose；
+          5) 将 flap 视作已 attach, 在关节空间规划到目标关键点对应的末端 pose
           6) 执行轨迹，最后撤离一点距离。
-        注意：
-          - 这里只用到我们自己定义的“虚拟几何 flap”，并不依赖 URDF 里 flap 当前的真实角度。
         """
 
         # print("using open_flap_with_ompl")
@@ -589,8 +552,17 @@ class KukaOmplPlanner:
 
         # 1) 算出此时指定flap的关键点和法向：用作“接触点”
         key_start, normal_start, axis_start = box.get_flap_keypoint_pose(
-            flap_id, p.getJointState(box.body_id, flap_id)[0], edge_ratio=0.3
+            flap_id, p.getJointState(box.body_id, flap_id)[0], edge_ratio=0.9
         )
+
+        # ---FOR DEBUGGING THE STARTING POINT---
+        # for temp_flap in range(4):
+        #     key_start, normal_start, axis_start = box.get_flap_keypoint_pose(
+        #         temp_flap, -90, edge_ratio=0.9
+        #     )
+        #     draw_point(key_start, [temp_flap%2, temp_flap%3, temp_flap%4], size=0.1, life_time=500)
+        # key_start, normal_start, axis_start = box.get_flap_keypoint_pose(
+        #     flap_id, -90, edge_ratio=0.9)
 
         # 接近点：沿法向外侧退一点
         DOWNWARD = False  # Flip the end-effector 
@@ -603,17 +575,14 @@ class KukaOmplPlanner:
                 key_start[i] + normal_start[i] * approach_dist for i in range(3)
             ]
         contact_orn = quat_from_normal_and_axis(normal_start, axis_start, downward=DOWNWARD)
-        # contact_orn = [-i for i in contact_orn]
-        # q_flip_z = p.getQuaternionFromEuler([0.0, 0.0, -0.5*math.pi])
-        # _, contact_orn_flipped = p.multiplyTransforms(
-        #     [0, 0, 0], ,   # 原始姿态
-        #     [0, 0, 0], ,      # 额外加的旋转
-        #     physicsClientId=self.cid,
-        # )
-        # contact_orn = contact_orn_flipped
 
-        # ---FOR DEBUG---
-        # self.set_robot_config(self.solve_ik(approach_pos, contact_orn))
+        # ---FOR DEBUGGING THE DESIRED POSITION---
+
+        # approach_pos = [0.65, 0.29, 0.6]
+
+        draw_point(approach_pos, [1, 0, 0], size=0.2, life_time=500)
+        self.set_robot_config(self.solve_ik_collision_aware(approach_pos, contact_orn, collision=False))
+        # import ipdb; ipdb.set_trace()
         # while True:
         #     p.stepSimulation(physicsClientId=self.cid)
 
@@ -626,7 +595,7 @@ class KukaOmplPlanner:
         # import ipdb; ipdb.set_trace()
 
         # 3) 插值下压到关键点（比再跑一次 OMPL 稳定）
-        # q_contact = self.solve_ik(key_start, contact_orn)
+        # q_contact = self.solve_ik_collision_aware(key_start, contact_orn, collision=False)
         # interp = interpolate_joint_line(self.get_current_config(), q_contact, 60)
         # self.execute_joint_trajectory_real(interp)
 
@@ -646,6 +615,23 @@ class KukaOmplPlanner:
         )
         print(f"[Flap] grasped flap {flap_id} with point-to-point constraint")
 
+        # get the contact point offset to the end-effector link frame
+        ee_contact_offset = self.get_ee_contact_offset(flap_id)
+        ee_state = p.getLinkState(
+            self.robot_id,
+            self.ee_link_index,
+            physicsClientId=self.cid,
+        )
+        ee_pos, ee_orn = ee_state[4], ee_state[5]
+        contact_pos = p.multiplyTransforms(
+            ee_pos,
+            ee_orn,
+            ee_contact_offset,
+            [0, 0, 0, 1],
+        )[0]
+        draw_point(contact_pos, [0, 1, 0], size=0.6, life_time=500)
+
+
         # import ipdb; ipdb.set_trace()
 
         # while True:
@@ -657,8 +643,6 @@ class KukaOmplPlanner:
         )
         goal_orn = quat_from_normal_and_axis(normal_goal, axis_goal)
 
-        # === 新增：计算“朝箱子中心”的方向 ===
-        # 先在 box 局部系里定义一个指向箱子中心的方向
         if flap_id == 0:      # +x 边的 flap，中心在 -x 方向
             center_dir_local = [-1.0, 0.0, 0.0]
         elif flap_id == 1:    # -x 边的 flap，中心在 +x 方向
@@ -685,7 +669,7 @@ class KukaOmplPlanner:
         center_dir_world = [c / norm for c in center_dir_world]
 
         # Let the end align with the box edge more
-        center_pull_dist = 0.07 
+        center_pull_dist = 0.0
 
         key_goal_pulled = [
             key_goal[i] + center_dir_world[i] * center_pull_dist
@@ -693,7 +677,7 @@ class KukaOmplPlanner:
         ]
 
         # ---FOR DEBUG---
-        # self.set_robot_config(self.solve_ik(key_goal_pulled, goal_orn))
+        # self.set_robot_config(self.solve_ik_collision_aware(key_goal_pulled, goal_orn, collision=True))
         # import ipdb; ipdb.set_trace()
 
         q_start = self.get_current_config()
@@ -716,99 +700,14 @@ class KukaOmplPlanner:
         retreat_pos = [
             key_goal[i] + normal_goal[i] * approach_dist for i in range(3)
         ]
-        q_retreat = self.solve_ik(retreat_pos, goal_orn)
-        retreat_traj = interpolate_joint_line(
-            self.get_current_config(), q_retreat, 45
-        )
-        self.execute_joint_trajectory(retreat_traj)
+        # q_retreat = self.solve_ik_collision_aware(retreat_pos, goal_orn)
+        # retreat_traj = interpolate_joint_line(
+        #     self.get_current_config(), q_retreat, 45
+        # )
+        self.move_to_pose(retreat_pos, goal_orn, timeout=timeout, real=True, num_waypoints=200)
+        # self.execute_joint_trajectory(retreat_traj)
 
         # import ipdb; ipdb.set_trace()
-
-    def unpack_box(self):
-        box = self.foldable_box
-        approach_orn = p.getQuaternionFromEuler([math.pi, 0, 0])
-        approach_h = 0.14
-        settle_steps = 120
-
-        for flap_id in box.flap_joint_indices:
-            print("----------Processing flap", flap_id, "----------")
-            target_pos, _, outward = box.get_flap_target_pose(flap_id)
-            approach_pos = [target_pos[0], target_pos[1], target_pos[2] + approach_h]
-            print(f"[Demo] approaching flap {flap_id} at", approach_pos)
-            path = self.move_to_pose(approach_pos, approach_orn, timeout=5.0)
-            if path is None:
-                print(f"[Demo] failed to reach flap {flap_id}")
-                continue
-
-            tap_pos = [target_pos[0]-0.01, target_pos[1], target_pos[2]-0.01]
-            # q_tap = self.solve_ik(tap_pos, approach_orn)
-            # import ipdb; ipdb.set_trace()
-            # self.execute_joint_trajectory(
-            #     interpolate_joint_line(self.get_current_config(), q_tap, 100)
-            # )
-            path = self.move_to_pose(tap_pos, approach_orn, timeout=3.0)
-            if path is None:
-                print(f"[Demo] failed to reach flap {flap_id}")
-                continue
-
-            contacts = p.getContactPoints(
-                bodyA=self.robot_id,
-                bodyB=self.box_id,
-                linkIndexA=self.ee_link_index,
-                linkIndexB=flap_id,
-                physicsClientId=self.cid,
-            )
-            if len(contacts) == 0:
-                print(f"[Demo] no contact with flap {flap_id}, skip grasp")
-                # continue
-
-            flap_constraint = p.createConstraint(
-                parentBodyUniqueId=self.robot_id,
-                parentLinkIndex=self.ee_link_index,
-                childBodyUniqueId=self.box_id,
-                childLinkIndex=flap_id,
-                jointType=p.JOINT_FIXED,
-                jointAxis=[0, 0, 0],
-                parentFramePosition=[0, 0, 0],
-                childFramePosition=[0, 0, 0],
-                physicsClientId=self.cid,
-            )
-            print(f"[Demo] grasped flap {flap_id}")
-            
-            pull_pos = [
-                target_pos[0] + 0.08 * outward[0],
-                target_pos[1] + 0.08 * outward[1],
-                target_pos[2] + 0.08,
-            ]
-
-            # import ipdb; ipdb.set_trace()
-
-            # q_pull = self.solve_ik(pull_pos, approach_orn)
-            # self.execute_joint_trajectory(
-            #     interpolate_joint_line(self.get_current_config(), q_pull, 600)
-            # )
-            self.move_to_pose(pull_pos, approach_orn, timeout=5.0)
-
-            # import ipdb; ipdb.set_trace()
-
-            p.removeConstraint(flap_constraint, physicsClientId=self.cid)
-
-            retreat_pos = [
-                target_pos[0] + 0.03 * outward[0],
-                target_pos[1] + 0.03 * outward[1],
-                target_pos[2] + approach_h + 0.03,
-            ]
-            q_retreat = self.solve_ik(retreat_pos, approach_orn)
-            self.execute_joint_trajectory(
-                interpolate_joint_line(self.get_current_config(), q_retreat, 45)
-            )
-
-            # import ipdb; ipdb.set_trace()
-
-        # box.open_all()
-        for _ in range(120):
-            p.stepSimulation(physicsClientId=self.cid)
-            time.sleep(1.0 / 240.0)
 
     def close(self):
         try:
