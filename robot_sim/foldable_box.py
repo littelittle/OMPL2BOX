@@ -105,7 +105,7 @@ class FoldableBox:
         self,
         flap_id: int,
         angle: float,
-        edge_ratio: float = 0.9,
+        edge_ratio: float = 0.8,
         ) -> Tuple[List[float], List[float], List[float]]:
         """
         在给定 flap 角度下，返回 flap 外侧关键点的世界坐标、法向和铰链轴。
@@ -198,7 +198,6 @@ class FoldableBox:
         )[0]
 
         return key_world, normal_world, axis_world
-
 
     def get_flap_target_pose(
         self, flap_id: int

@@ -61,7 +61,7 @@ def _mat_to_quat(R):
     return [x, y, z, w]
 
 
-def quat_from_normal_and_axis(normal_world, axis_world):
+def quat_from_normal_and_axis(normal_world, axis_world, downward: bool = False):
     """
     给定：
       - normal_world: flap 外表面的法向（世界系）
@@ -74,7 +74,10 @@ def quat_from_normal_and_axis(normal_world, axis_world):
     a = _normalize(axis_world)
 
     # 末端 -Z 轴指向 flap 内部：tool_z = -n
-    z = [-n[0], -n[1], -n[2]]
+    if downward:
+        z = n
+    else:
+        z = [-n[0], -n[1], -n[2]]
 
     # 先用 a 当作 X 轴，再做一次正交化，避免和 z 太接近
     x = a

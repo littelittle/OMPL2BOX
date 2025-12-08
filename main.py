@@ -5,8 +5,11 @@ from pathlib import Path
 
 import pybullet as p
 
-from robot_sim.planner import KukaOmplPlanner, interpolate_joint_line
-
+from robot_sim import (
+    KukaOmplPlanner,
+    PandaGripperPlanner,
+    interpolate_joint_line,
+)
 
 def load_config(path: str | Path):
     cfg_path = Path(path)
@@ -23,14 +26,12 @@ def run_unpack(planner: KukaOmplPlanner):
         planner.execute_joint_trajectory_real(interp_to_grasp, 0.1)
         print(f"Flap {i} opened.")
 
-
 def run_pick_place(planner: KukaOmplPlanner, cfg: dict):
     print("[Demo] Pick-and-place demo ...")
     pick_cfg = cfg.get("pick_place", {})
     box_pos = pick_cfg.get("box_pos", [0.6, 0.0, 0.1])
     place_pos = pick_cfg.get("place_pos", [0.5, -0.35, 0.1])
     planner.pick_and_place(box_pos, place_pos)
-
 
 def main():
     parser = argparse.ArgumentParser(description="KUKA + foldable box demos")
@@ -52,14 +53,25 @@ def main():
     parser.add_argument(
         "--nogui", dest="gui", action="store_false", help="Run in DIRECT mode"
     )
+    parser.add_argument(
+        "--robot",
+        choices=["kuka", "panda"],
+        default="kuka",
+        help="Robot model to use",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     mode = args.mode or cfg.get("mode", "unpack")
     gui = cfg.get("gui", True) if args.gui is None else args.gui
+    robot_name = args.robot or cfg.get("robot", "kuka")
     box_base_pos = cfg.get("foldable_box_pos", [0.7, 0.0, 0.1])
 
-    planner = KukaOmplPlanner(use_gui=gui, box_base_pos=box_base_pos)
+    if robot_name == "panda":
+        planner = PandaGripperPlanner(use_gui=gui, box_base_pos=box_base_pos)
+    else:
+        planner = KukaOmplPlanner(use_gui=gui, box_base_pos=box_base_pos)
+
     if mode == "unpack":
         run_unpack(planner)
     else:
@@ -68,8 +80,7 @@ def main():
     print("Press Ctrl+C to quit the GUI window.")
     while True:
         p.stepSimulation(physicsClientId=planner.cid)
-        time.sleep(1.0 / 20.0)
-
+        time(1.0 / 20.0)
 
 if __name__ == "__main__":
     main()
