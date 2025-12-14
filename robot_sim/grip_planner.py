@@ -9,7 +9,7 @@ from ompl import geometric as og
 
 from .foldable_box import FoldableBox
 from .utils.vector import quat_from_normal_and_axis
-from .utils.path import interpolate_joint_line
+from .utils.path import interpolate_joint_line, draw_point
 from .suck_planner import KukaOmplPlanner
 
 class PandaGripperPlanner(KukaOmplPlanner):
@@ -72,6 +72,17 @@ class PandaGripperPlanner(KukaOmplPlanner):
             physicsClientId=self.cid,
         )
 
+        # Disable gripper joint motors for direct control
+        # for j in self.gripper_joint_indices:
+        #     p.setJointMotorControl2(
+        #         bodyUniqueId=self.robot_id,
+        #         jointIndex=j,
+        #         controlMode=p.VELOCITY_CONTROL,
+        #         targetVelocity=0.0,
+        #         force=0.0,             
+        #         physicsClientId=self.cid,
+        #     )
+
         # ---------- OMPL setup ----------
         self.space = ob.RealVectorStateSpace(self.ndof)
 
@@ -115,7 +126,7 @@ class PandaGripperPlanner(KukaOmplPlanner):
                 self.joint_indices.append(j)
                 ll = ji[8]
                 ul = ji[9]
-                if ul < ll or (ll == 0 and ul == -1):
+                if True or ul < ll or (ll == 0 and ul == -1): # for simplicty, ignore limits from URDF
                     ll, ul = -3.14, 3.14
                 self.lower_limits.append(ll)
                 self.upper_limits.append(ul)
@@ -145,195 +156,181 @@ class PandaGripperPlanner(KukaOmplPlanner):
         )
         return [s[0] for s in states]
 
-    def is_state_valid(self, state) -> bool:
-        q = [float(state[i]) for i in range(self.ndof)]
-        self.set_robot_config(q)
-
-        check_links = self.collision_link_indices or self.joint_indices
-        for link_index in check_links:
-            pts1 = p.getClosestPoints(
-                bodyA=self.robot_id,
-                bodyB=self.plane_id,
-                distance=0.002,
-                linkIndexA=link_index,
-                linkIndexB=-1,
-                physicsClientId=self.cid,
-            )
-            if len(pts1) > 0:
-                return False
-
-            if not self.box_attached == -2:
-                for box_link in range(-1, 4):
-                    if box_link == self.box_attached:
-                        continue
-                    pts2 = p.getClosestPoints(
-                        bodyA=self.robot_id,
-                        bodyB=self.box_id,
-                        distance=0.002,
-                        linkIndexA=link_index,
-                        linkIndexB=-1,
-                        physicsClientId=self.cid,
-                    )
-                    if len(pts2) > 0:
-                        return False
-        return True
-
-    def is_config_valid(self, q) -> bool:
-        assert len(q) == self.ndof
-        self.set_robot_config(q)
-
-        check_links = self.collision_link_indices or self.joint_indices
-        for link_index in check_links:
-            pts1 = p.getClosestPoints(
-                bodyA=self.robot_id,
-                bodyB=self.plane_id,
-                distance=0.02,
-                linkIndexA=link_index,
-                linkIndexB=-1,
-                physicsClientId=self.cid,
-            )
-            if len(pts1) > 0:
-                return False
-
-            if self.box_attached != -2:
-                for box_link in range(-1, 4):
-                    if box_link == self.box_attached:
-                        continue
-                    pts2 = p.getClosestPoints(
-                        bodyA=self.robot_id,
-                        bodyB=self.box_id,
-                        distance=0.02,
-                        linkIndexA=link_index,
-                        linkIndexB=box_link,
-                        physicsClientId=self.cid,
-                    )
-                    if len(pts2) > 0:
-                        return False
-        return True
-
     # ---------- gripper control ----------
-    def command_gripper_width(self, width: float, force: float = 40.0):
+    def command_gripper_width(self, width: float, force: float = 40.0, wait: float = 1.0):
         target = max(0.0, min(self.gripper_open_width, width)) * 0.5
+        # for j in self.gripper_joint_indices:
+        #     p.setJointMotorControl2(
+        #         bodyUniqueId=self.robot_id,
+        #         jointIndex=j,
+        #         controlMode=p.POSITION_CONTROL,
+        #         targetPosition=target,
+        #         force=force,
+        #         positionGain=0.6,
+        #         velocityGain=1.0,
+        #         physicsClientId=self.cid,
+        #     )
+        # steps = int(wait / self.control_dt) if hasattr(self, "control_dt") else 60
+        # for _ in range(steps):
+        #     p.stepSimulation(physicsClientId=self.cid)
+        #     time.sleep(self.control_dt)
+        # # for simplicity, just reset the joint state
+        for j in self.gripper_joint_indices:
+            p.resetJointState(
+                self.robot_id,
+                j,
+                targetValue=target,
+                targetVelocity=0.0,
+                physicsClientId=self.cid,
+            )
+        print("[Gripper] moving to width:", width)
+
+    def open_gripper(self):
+        # Disable gripper joint motors for direct control
+        for j in self.gripper_joint_indices:
+            p.setJointMotorControl2(
+                bodyUniqueId=self.robot_id,
+                jointIndex=j,
+                controlMode=p.VELOCITY_CONTROL,
+                targetVelocity=0.0,
+                force=40.0,             
+                physicsClientId=self.cid,
+            )
+        self.command_gripper_width(self.gripper_open_width)
+
+    def close_gripper(self, squeeze: float = 0.0, force: float = 200.0, wait: float = 1.0):
+        # self.command_gripper_width(max(self.gripper_close_width, squeeze))
         for j in self.gripper_joint_indices:
             p.setJointMotorControl2(
                 bodyUniqueId=self.robot_id,
                 jointIndex=j,
                 controlMode=p.POSITION_CONTROL,
-                targetPosition=target,
+                targetPosition=0,
                 force=force,
                 positionGain=0.6,
-                velocityGain=1.0,
+                velocityGain=1,
                 physicsClientId=self.cid,
             )
-
-    def open_gripper(self):
-        self.command_gripper_width(self.gripper_open_width)
-
-    def close_gripper(self, squeeze: float = 0.0):
-        self.command_gripper_width(max(self.gripper_close_width, squeeze))
+        steps = int(wait / self.control_dt) if hasattr(self, "control_dt") else 60
+        for _ in range(steps):
+            p.stepSimulation(physicsClientId=self.cid)
+            time.sleep(self.control_dt)
+        # for j in self.gripper_joint_indices:
+        #     p.setJointMotorControl2(
+        #         bodyUniqueId=self.robot_id,
+        #         jointIndex=j,
+        #         controlMode=p.VELOCITY_CONTROL,
+        #         targetVelocity=0.0,
+        #         force=40.0,             
+        #         physicsClientId=self.cid,
+        #     )
 
     # ---------- tasks ----------
     def open_flap_with_ompl(
         self,
         flap_id: int,
         target_angle_deg: float = 90.0,
-        approach_dist: float = 0.05,
+        approach_dist: float = 0.12,
         timeout: float = 4.0,
     ):
         box = self.foldable_box
-        angle_rad = math.radians(target_angle_deg)
 
-        old_box_attached = self.box_attached
-        self.box_attached = flap_id
+        # old_box_attached = self.box_attached
+        self.box_attached = 4 # all flaps attached to avoid collision during motion planning
 
-        key_start, normal_start, axis_start = box.get_flap_keypoint_pose(
+        key_start, normal_start, axis_start, extended_start = box.get_flap_keypoint_pose(
             flap_id, angle=0.0
         )
         approach_pos = [
-            key_start[i] + normal_start[i] * approach_dist for i in range(3)
+            key_start[i] + extended_start[i] * approach_dist for i in range(3)
         ]
-        contact_orn = quat_from_normal_and_axis(normal_start, axis_start)
+        contact_orn = quat_from_normal_and_axis(extended_start, axis_start)
         # contact_orn = [-i for i in contact_orn]
 
         self.open_gripper()
-        path = self.move_to_pose(approach_pos, contact_orn, timeout=timeout, real=False)
+
+        # draw_point(approach_pos, [1, 0, 0], size=0.2, life_time=500)        
+        # self.set_robot_config(self.solve_ik_collision_aware(approach_pos, contact_orn, collision=True))
+        path = self.move_to_pose(approach_pos, contact_orn, timeout=timeout, real=True, num_waypoints=1000, optimal=False)
+        # import ipdb; ipdb.set_trace()
         if path is None:
             print(f"[Flap] failed to approach flap {flap_id}")
             return
-
-        q_contact = self.solve_ik(key_start, contact_orn)
-        interp = interpolate_joint_line(self.get_current_config(), q_contact, 60)
-        self.execute_joint_trajectory_real(interp)
+        for _ in range(10):
+            p.stepSimulation(physicsClientId=self.cid)
+            time.sleep(1.0 / 240.0)
+        # approach_pos = [
+        #     key_start[i] + extended_start[i] * 0.9* approach_dist for i in range(3)
+        # ]
+        # path = self.move_to_pose(approach_pos, contact_orn, timeout=timeout, real=False, num_waypoints=500)
+        # if path is None:
+        #     print(f"[Flap] failed to approach flap {flap_id}")
+        #     return
+        
+        self.box_attached = flap_id
 
         self.close_gripper()
-        flap_constraint = p.createConstraint(
-            parentBodyUniqueId=self.robot_id,
-            parentLinkIndex=self.ee_link_index,
-            childBodyUniqueId=self.box_id,
-            childLinkIndex=flap_id,
-            jointType=p.JOINT_FIXED,
-            jointAxis=[0, 0, 0],
-            parentFramePosition=[0, 0, 0],
-            childFramePosition=[0, 0, 0],
-            physicsClientId=self.cid,
-        )
-        print(f"[Flap] gripped flap {flap_id} with fixed constraint")
 
-        key_goal, normal_goal, axis_goal = box.get_flap_keypoint_pose(
-            flap_id, angle=-angle_rad
-        )
-        goal_orn = quat_from_normal_and_axis(normal_goal, axis_goal)
+        motion_planning = False
+        if motion_planning:
+            for delta_angle in range(10, int(target_angle_deg)+1, 10):
+                key_goal, normal_goal, axis_goal, extended_goal = box.get_flap_keypoint_pose(
+                    flap_id, angle=-math.radians(delta_angle)
+                )
+                goal_orn = quat_from_normal_and_axis(extended_goal, axis_goal)
 
-        if flap_id == 0:
-            center_dir_local = [-1.0, 0.0, 0.0]
-        elif flap_id == 1:
-            center_dir_local = [1.0, 0.0, 0.0]
-        elif flap_id == 2:
-            center_dir_local = [0.0, -1.0, 0.0]
-        else:
-            center_dir_local = [0.0, 1.0, 0.0]
+                center_pull_dist = 0.12
+                key_goal_pulled = [
+                    key_goal[i] + extended_goal[i] * center_pull_dist
+                    for i in range(3)
+                ]
 
-        base_pos, base_orn = p.getBasePositionAndOrientation(
-            self.box_id, physicsClientId=self.cid
-        )
-        center_dir_world = p.multiplyTransforms(
-            [0.0, 0.0, 0.0],
-            base_orn,
-            center_dir_local,
-            [0.0, 0.0, 0.0, 1.0],
-            physicsClientId=self.cid,
-        )[0]
-        norm = (center_dir_world[0] ** 2 + center_dir_world[1] ** 2 + center_dir_world[2] ** 2) ** 0.5
-        center_dir_world = [c / norm for c in center_dir_world]
+                q_start = self.get_current_config()
+                self.box_attached = -2
+                q_goal = self.solve_ik_collision_aware(key_goal_pulled, goal_orn, collision=False)
+                # self.set_robot_config(q_start)
 
-        center_pull_dist = 0.1
-        key_goal_pulled = [
-            key_goal[i] + center_dir_world[i] * center_pull_dist
-            for i in range(3)
-        ]
+                path_open = self.plan(q_start, q_goal, timeout=timeout, num_waypoints=200, optimal=False)
+                # if path_open is None:
+                #     print(f"[Flap] failed to plan opening motion for flap {flap_id}")
+                #     p.removeConstraint(flap_constraint, physicsClientId=self.cid)
+                #     self.open_gripper()
+                #     return
+                self.execute_path_real(path_open, DRAW_DEBUG_LINES=True)
 
-        q_start = self.get_current_config()
-        self.box_attached = -2
-        q_goal = self.solve_ik_collision_aware(key_goal_pulled, goal_orn)
+                # p.removeConstraint(flap_constraint, physicsClientId=self.cid)
+        else: # using IK interpolation
+            for delta_angle in range(5, int(target_angle_deg)+1, 5):
+                key_goal, normal_goal, axis_goal, extended_goal = box.get_flap_keypoint_pose(
+                    flap_id, angle=-math.radians(delta_angle)
+                )
+                goal_orn = quat_from_normal_and_axis(extended_goal, axis_goal)
 
-        path_open = self.plan(q_start, q_goal, timeout=timeout)
-        if path_open is None:
-            print(f"[Flap] failed to plan opening motion for flap {flap_id}")
-            p.removeConstraint(flap_constraint, physicsClientId=self.cid)
-            self.open_gripper()
-            return
-        self.execute_path_real(path_open)
+                center_pull_dist = 0.12
+                key_goal_pulled = [
+                    key_goal[i] + extended_goal[i] * center_pull_dist
+                    for i in range(3)
+                ]
 
-        p.removeConstraint(flap_constraint, physicsClientId=self.cid)
+                q_goal = self.solve_ik_collision_aware(key_goal_pulled, goal_orn, collision=True)
+                q_start = self.get_current_config()
+                traj = interpolate_joint_line(q_start, q_goal, 90)
+                self.execute_joint_trajectory_real(traj)
+                # self.close_gripper()
+            while True:
+                p.stepSimulation(physicsClientId=self.cid)
+                time.sleep(1.0 / 240.0)
+                break
+        self.close_gripper()
         self.open_gripper()
 
         retreat_pos = [
-            key_goal[i] + normal_goal[i] * approach_dist for i in range(3)
+            key_goal[i] + extended_goal[i] * approach_dist for i in range(3)
         ]
-        q_retreat = self.solve_ik(retreat_pos, goal_orn)
+        q_retreat = self.solve_ik_collision_aware(retreat_pos, goal_orn, collision=True)
         retreat_traj = interpolate_joint_line(
             self.get_current_config(), q_retreat, 45
         )
         self.execute_joint_trajectory(retreat_traj)
 
-        self.box_attached = old_box_attached
+        self.box_attached = 4

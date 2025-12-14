@@ -18,7 +18,7 @@ def load_config(path: str | Path):
     with cfg_path.open("r") as f:
         return json.load(f)
 
-def run_unpack(planner: KukaOmplPlanner):
+def run_unpack(planner):
     print("[Demo] Unpacking a foldable box with 4 flaps ...")
     for i in range(3, -1, -1):
         planner.open_flap_with_ompl(i)

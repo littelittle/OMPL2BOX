@@ -197,7 +197,11 @@ class FoldableBox:
             physicsClientId=self.cid,
         )[0]
 
-        return key_world, normal_world, axis_world
+        # compute the third axis based on normal and axis
+        extended_world = _cross(axis_world, normal_world)
+        extended_world = _normalize(extended_world)
+
+        return key_world, normal_world, axis_world, extended_world
 
     def get_flap_target_pose(
         self, flap_id: int

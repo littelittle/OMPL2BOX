@@ -38,6 +38,7 @@ class KukaOmplPlanner:
         )
 
         self.joint_indices: List[int] = []
+        self.collision_link_indices = None
         self.lower_limits: List[float] = []
         self.upper_limits: List[float] = []
         self.rest_pose: List[float] = []
@@ -127,9 +128,12 @@ class KukaOmplPlanner:
 
     def is_state_valid(self, state) -> bool:
         q = [float(state[i]) for i in range(self.ndof)]
+        backup = self.get_current_config()
         self.set_robot_config(q)
 
-        for link_index in self.joint_indices:
+        check_list = self.collision_link_indices or self.joint_indices
+
+        for link_index in check_list:
             pts1 = p.getClosestPoints(
                 bodyA=self.robot_id,
                 bodyB=self.plane_id,
@@ -139,26 +143,30 @@ class KukaOmplPlanner:
                 physicsClientId=self.cid,
             )
             if len(pts1) > 0:
+                self.set_robot_config(backup)
                 return False
 
         if not self.box_attached==-2:
-            for link_index in self.joint_indices:
+            for link_index in check_list:
+                # import ipdb; ipdb.set_trace()
                 for box_link in range(-1, 4):
                     if box_link == self.box_attached:
+                        print("skipping collision check for attached flap ", box_link)
                         continue
                     pts2 = p.getClosestPoints(
                         bodyA=self.robot_id,
                         bodyB=self.box_id,
-                        distance=0.00,
+                        distance=0.008,
                         linkIndexA=link_index,
-                        linkIndexB=-1,
+                        linkIndexB=box_link,
                         physicsClientId=self.cid,
                     )
                     # print("hh")
                     if len(pts2) > 0:
                         # import ipdb; ipdb.set_trace()
+                        self.set_robot_config(backup)
                         return False
-
+        self.set_robot_config(backup)
         return True
 
     # ---------- Controller ----------
@@ -179,7 +187,7 @@ class KukaOmplPlanner:
             )
 
     # ---------- OMPL planning ----------
-    def plan(self, q_start: List[float], q_goal: List[float], timeout: float = 3.0, num_waypoints=1000):
+    def plan(self, q_start: List[float], q_goal: List[float], timeout: float = 3.0, num_waypoints=1000, optimal: bool = False):
         assert len(q_start) == self.ndof and len(q_goal) == self.ndof
 
         def clamp_and_warn(name, q):
@@ -190,7 +198,10 @@ class KukaOmplPlanner:
                 if q[i] < lb or q[i] > ub:
                     print(f"[WARN] {name} joint {i} out of bounds: {q[i]:.5f} not in [{lb:.5f}, {ub:.5f}]")
                     # 简单粗暴：夹到边界
-                    q_clamped[i] = min(max(q[i], lb), ub)
+                    if lb == -3.14 and ub == 3.14:
+                        q_clamped[i] = q[i] - ((q[i]+3.14)//6.28) * 6.28
+                    else:
+                        q_clamped[i] = min(max(q[i], lb), ub)
             return q_clamped
         
         q_start = clamp_and_warn("q_start", q_start)
@@ -205,7 +216,10 @@ class KukaOmplPlanner:
         pdef = ob.ProblemDefinition(self.si)
         pdef.setStartAndGoalStates(start, goal)
 
-        planner = og.RRTConnect(self.si)
+        if optimal:
+            planner = og.InformedRRTstar(self.si)
+        else:
+            planner = og.RRTConnect(self.si)
         planner.setRange(0.2)
         planner.setProblemDefinition(pdef)
         planner.setup()
@@ -408,7 +422,7 @@ class KukaOmplPlanner:
         base_rest = self.rest_pose[:]
 
         for t in range(max_trials):
-            if t == 0:
+            if t == 1:
                 rest = base_rest
             else:
                 # add some noise to the rest pose 
@@ -426,11 +440,13 @@ class KukaOmplPlanner:
                 jointRanges=[u - l for l, u in zip(self.lower_limits, self.upper_limits)],
                 restPoses=rest,
                 physicsClientId=self.cid,
+                maxNumIterations=1000,
+                residualThreshold=1e-5,
             )
             q_candidate = list(ik[: self.ndof])
 
-            if self.is_state_valid(q_candidate) or not collision:
-                if not collision:
+            if not collision or self.is_state_valid(q_candidate) :
+                if collision:
                     print("[IK] found collision-free IK solution in trial", t)
                 else:
                     print("[IK] found IK(not sure if collision free!) solution in trial", t)
@@ -440,7 +456,7 @@ class KukaOmplPlanner:
         import ipdb; ipdb.set_trace()
         return None 
 
-    def move_to_pose(self, pos, orn, timeout: float = 4.0, real=True, debug=False, num_waypoints=1000):
+    def move_to_pose(self, pos, orn, timeout: float = 4.0, real=True, debug=False, num_waypoints=1000, optimal: bool = False):
         q_start = self.get_current_config()
         q_goal = self.solve_ik_collision_aware(pos, orn)
 
@@ -471,7 +487,7 @@ class KukaOmplPlanner:
                 p.stepSimulation()
             return None
 
-        path = self.plan(q_start, q_goal, timeout=timeout, num_waypoints=num_waypoints) 
+        path = self.plan(q_start, q_goal, timeout=timeout, num_waypoints=num_waypoints, optimal=optimal) 
         if path is not None:
             if debug:
                 for i in range(path.getStateCount()):
@@ -527,7 +543,7 @@ class KukaOmplPlanner:
         self,
         flap_id: int,
         target_angle_deg: float = 90.0,
-        approach_dist: float = 0.00,
+        approach_dist: float = 0.06,
         timeout: float = 4.0,
     ):
         """
@@ -551,7 +567,7 @@ class KukaOmplPlanner:
         self.box_attached = flap_id
 
         # 1) 算出此时指定flap的关键点和法向：用作“接触点”
-        key_start, normal_start, axis_start = box.get_flap_keypoint_pose(
+        key_start, normal_start, axis_start, _ = box.get_flap_keypoint_pose(
             flap_id, p.getJointState(box.body_id, flap_id)[0], edge_ratio=0.9
         )
 
@@ -577,11 +593,10 @@ class KukaOmplPlanner:
         contact_orn = quat_from_normal_and_axis(normal_start, axis_start, downward=DOWNWARD)
 
         # ---FOR DEBUGGING THE DESIRED POSITION---
-
-        # approach_pos = [0.65, 0.29, 0.6]
+        # TIPS: remember to modify the max_iter and telorance in IK !!
 
         draw_point(approach_pos, [1, 0, 0], size=0.2, life_time=500)
-        self.set_robot_config(self.solve_ik_collision_aware(approach_pos, contact_orn, collision=False))
+        # self.set_robot_config(self.solve_ik_collision_aware(approach_pos, contact_orn, collision=False))
         # import ipdb; ipdb.set_trace()
         # while True:
         #     p.stepSimulation(physicsClientId=self.cid)
@@ -638,7 +653,7 @@ class KukaOmplPlanner:
         #     p.stepSimulation(physicsClientId=self.cid)
 
         # 5) 准备目标姿态：目标角度下的关键点 & 法向
-        key_goal, normal_goal, axis_goal = box.get_flap_keypoint_pose(
+        key_goal, normal_goal, axis_goal, _ = box.get_flap_keypoint_pose(
             flap_id, angle=-angle_rad
         )
         goal_orn = quat_from_normal_and_axis(normal_goal, axis_goal)
