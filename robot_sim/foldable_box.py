@@ -21,9 +21,10 @@ def _rotate_axis_angle(v, axis, angle: float):
 class FoldableBox:
     """A simple foldable box with four top flaps driven by hinge joints (URDF-based)."""
 
-    def __init__(self, base_pos, cid):
+    def __init__(self, base_pos, base_orn, cid):
         self.cid = cid
         self.base_pos = base_pos
+        self.base_orn = base_orn
         self.base_half_extents = [0.15, 0.12, 0.1]
         self.flap_len = 0.12
         self.flap_width = 0.16
@@ -42,7 +43,7 @@ class FoldableBox:
             basePosition=self.base_pos,
             # flip 90 degrees to have flaps point upwards initially
             # baseOrientation=[0, 0, math.sin(-math.pi / 4), math.cos(-math.pi / 4)],
-            baseOrientation=p.getQuaternionFromEuler([0, 0, 0]),
+            baseOrientation=self.base_orn,
             useFixedBase=True,
             physicsClientId=self.cid,
         )
@@ -104,7 +105,7 @@ class FoldableBox:
     def get_flap_keypoint_pose(
         self,
         flap_id: int,
-        angle: float,
+        angle: float = None,
         edge_ratio: float = 0.8,
         ) -> Tuple[List[float], List[float], List[float]]:
         """
@@ -123,6 +124,11 @@ class FoldableBox:
         - edge_ratio: 关键点沿 flap 长度方向距离铰链的比例（0~1），接近 1 表示靠近自由边。
         """
         assert 0 <= flap_id < 4
+
+        if angle is None:
+            angle = p.getJointState(
+                self.body_id, flap_id, physicsClientId=self.cid
+            )[0]
 
         # 当前 box 的基座位姿（注意：不要再只用 self.base_pos，pick-place 会修改 base pose）
         base_pos, base_orn = p.getBasePositionAndOrientation(
@@ -201,7 +207,7 @@ class FoldableBox:
         extended_world = _cross(axis_world, normal_world)
         extended_world = _normalize(extended_world)
 
-        return key_world, normal_world, axis_world, extended_world
+        return key_world, normal_world, axis_world, extended_world, angle
 
     def get_flap_target_pose(
         self, flap_id: int

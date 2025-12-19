@@ -129,6 +129,10 @@ class KukaOmplPlanner:
     def is_state_valid(self, state) -> bool:
         q = [float(state[i]) for i in range(self.ndof)]
         backup = self.get_current_config()
+        for i in range(self.ndof):
+            if q[i] < self.lower_limits[i] - 1e-5 or q[i] > self.upper_limits[i] + 1e-5:
+                return False
+
         self.set_robot_config(q)
 
         check_list = self.collision_link_indices or self.joint_indices
@@ -151,7 +155,7 @@ class KukaOmplPlanner:
                 # import ipdb; ipdb.set_trace()
                 for box_link in range(-1, 4):
                     if box_link == self.box_attached:
-                        print("skipping collision check for attached flap ", box_link)
+                        # print("skipping collision check for attached flap ", box_link)
                         continue
                     pts2 = p.getClosestPoints(
                         bodyA=self.robot_id,
@@ -315,8 +319,8 @@ class KukaOmplPlanner:
                 )
 
         q_curr = self.get_current_config()
-
         for i in range(path.getStateCount()):
+            print("the wrist joint angle:", self.get_current_config()[5])
             print("[PyBullet] moving to waypoint", i + 1, "/", path.getStateCount())
             state = path.getState(i)
             q_next = [float(state[j]) for j in range(self.ndof)]
@@ -417,6 +421,42 @@ class KukaOmplPlanner:
         ee_pos = [contact_pos[i] - offset_world[i] for i in range(3)]
         return ee_pos, contact_orn
 
+    def _wrap_into_limits(self, q, q_ref=None):
+        qn = list(q)
+        if q_ref is None:
+            q_ref = self.get_current_config()
+        period = 2.0 * math.pi
+
+        for i in range(self.ndof):
+            lb = float(self.lower_limits[i])
+            ub = float(self.upper_limits[i])
+
+            jidx = self.joint_indices[i]
+            jtype = p.getJointInfo(self.robot_id, jidx, physicsClientId=self.cid)[2]
+
+            # prismatic: 直接 clamp
+            if jtype != p.JOINT_REVOLUTE:
+                qn[i] = min(max(qn[i], lb), ub)
+                continue
+
+            # 找所有 q + 2πk 落在 [lb,ub] 的整数 k
+            k_min = math.ceil((lb - qn[i]) / period)
+            k_max = math.floor((ub - qn[i]) / period)
+
+            if k_min <= k_max:
+                # 选一个最接近参考角（当前关节角）的解，避免跳变
+                best = None
+                best_err = 1e18
+                for k in range(k_min, k_max + 1):
+                    cand = qn[i] + period * k
+                    err = abs(cand - float(q_ref[i]))
+                    if err < best_err:
+                        best_err = err
+                        best = cand
+                qn[i] = best
+
+        return qn
+
     def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=2000):
         import random
         base_rest = self.rest_pose[:]
@@ -427,7 +467,7 @@ class KukaOmplPlanner:
             else:
                 # add some noise to the rest pose 
                 rest = [
-                    r + random.uniform(-1, 1) for r in base_rest
+                    r + random.uniform(-0.1, 0.1) for r in base_rest
                 ]
 
             ik = p.calculateInverseKinematics(
@@ -441,10 +481,24 @@ class KukaOmplPlanner:
                 restPoses=rest,
                 physicsClientId=self.cid,
                 maxNumIterations=1000,
-                residualThreshold=1e-5,
+                residualThreshold=1e-4,
             )
             q_candidate = list(ik[: self.ndof])
 
+            q_candidate = self._wrap_into_limits(q_candidate)
+
+            bad = False
+
+            # check in range
+            for i in range(self.ndof):
+                if q_candidate[i] < self.lower_limits[i] - 1e-5 or q_candidate[i] > self.upper_limits[i] + 1e-5:
+                    print(f"[IK] joint {i} out of bounds: {q_candidate[i]:.5f} not in [{self.lower_limits[i]:.5f}, {self.upper_limits[i]:.5f}]")
+                    bad = True
+                    break
+            if bad:
+                continue
+
+            # import ipdb; ipdb.set_trace()
             if not collision or self.is_state_valid(q_candidate) :
                 if collision:
                     print("[IK] found collision-free IK solution in trial", t)
@@ -453,12 +507,14 @@ class KukaOmplPlanner:
                 # import ipdb; ipdb.set_trace()
                 return q_candidate
         print("[IK] failed to find collision-free IK solution after", max_trials, "trials")
-        import ipdb; ipdb.set_trace()
+        # import ipdb; ipdb.set_trace()
         return None 
 
     def move_to_pose(self, pos, orn, timeout: float = 4.0, real=True, debug=False, num_waypoints=1000, optimal: bool = False):
         q_start = self.get_current_config()
         q_goal = self.solve_ik_collision_aware(pos, orn)
+        if q_goal is None:
+            return None
 
         start_state = ob.State(self.space)
         goal_state = ob.State(self.space)

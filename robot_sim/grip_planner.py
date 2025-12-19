@@ -1,6 +1,6 @@
 import math
 import time
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pybullet as p
 import pybullet_data
@@ -19,17 +19,15 @@ class PandaGripperPlanner(KukaOmplPlanner):
     gripper control so flaps can be pinched before folding.
     """
 
-    def __init__(self, use_gui: bool = True, box_base_pos=None):
-        self.cid = p.connect(p.GUI if use_gui else p.DIRECT)
+    def __init__(self, oracle_function=None, cid: Optional[int] = None, box_id: Optional[int] = None):
+        self.cid = cid
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81, physicsClientId=self.cid)
 
-        box_base_pos = box_base_pos or [0.6, 0.0, 0.1]
-
         # Environment: plane + foldable box
         self.plane_id = p.loadURDF("plane.urdf", physicsClientId=self.cid)
-        self.foldable_box = FoldableBox(base_pos=box_base_pos, cid=self.cid)
-        self.box_id = self.foldable_box.body_id
+        # self.foldable_box = FoldableBox(base_pos=box_base_pos, cid=self.cid)
+        # self.box_id = self.foldable_box.body_id
 
         # Robot: Franka Panda with gripper
         self.robot_id = p.loadURDF(
@@ -39,6 +37,10 @@ class PandaGripperPlanner(KukaOmplPlanner):
             flags=p.URDF_USE_SELF_COLLISION,
             physicsClientId=self.cid,
         )
+        self.oracle_function = oracle_function
+        if box_id is None:
+            print("[Warning] box_id is not provided to PandaGripperPlanner, collision checking with the box may not work properly.")
+        self.box_id = box_id
 
         self.joint_indices: List[int] = []
         self.collision_link_indices: List[int] = []
@@ -51,6 +53,8 @@ class PandaGripperPlanner(KukaOmplPlanner):
         self.box_constraint_id: Optional[int] = None
         self.gripper_open_width: float = 0.08
         self.gripper_close_width: float = 0.0
+        self.left_finger_link_index: Optional[int] = None
+        self.right_finger_link_index: Optional[int] = None
 
         self._extract_active_joints()
 
@@ -71,6 +75,7 @@ class PandaGripperPlanner(KukaOmplPlanner):
             numSolverIterations=50,
             physicsClientId=self.cid,
         )
+        self.set_robot_config(self.home_config)
 
         # Disable gripper joint motors for direct control
         # for j in self.gripper_joint_indices:
@@ -121,12 +126,27 @@ class PandaGripperPlanner(KukaOmplPlanner):
                 if is_finger:
                     self.gripper_joint_indices.append(j)
                     self.collision_link_indices.append(j)
+
+                    # Try to identify left/right finger links for grasp checking.
+                    lname = link_name.lower()
+                    jname = joint_name.lower()
+                    if ("left" in lname) or ("left" in jname):
+                        self.left_finger_link_index = j
+                    elif ("right" in lname) or ("right" in jname):
+                        self.right_finger_link_index = j
                     continue
 
                 self.joint_indices.append(j)
                 ll = ji[8]
                 ul = ji[9]
-                if True or ul < ll or (ll == 0 and ul == -1): # for simplicty, ignore limits from URDF
+                # some hand adjustments
+                if j==5: # the wrist joint has weird limits
+                    ul = 4.8
+                if j==1: # the second joint is better limited
+                    ll, ul = -2.0, 2.0
+                if j==6: # the last joint is better limited
+                    ll, ul = -3.14, 3.14
+                if ul < ll or (ll == 0 and ul == -1): # for simplicty, ignore limits from URDF
                     ll, ul = -3.14, 3.14
                 self.lower_limits.append(ll)
                 self.upper_limits.append(ul)
@@ -138,6 +158,12 @@ class PandaGripperPlanner(KukaOmplPlanner):
 
             if link_name == "panda_hand":
                 self.ee_link_index = j
+
+        # Fallback: if we didn't find explicit left/right labels, just take the first two finger joints.
+        if self.left_finger_link_index is None or self.right_finger_link_index is None:
+            if len(self.gripper_joint_indices) >= 2:
+                self.left_finger_link_index = self.gripper_joint_indices[0]
+                self.right_finger_link_index = self.gripper_joint_indices[1]
 
     def set_robot_config(self, q: List[float]):
         assert len(q) == self.ndof
@@ -198,7 +224,7 @@ class PandaGripperPlanner(KukaOmplPlanner):
             )
         self.command_gripper_width(self.gripper_open_width)
 
-    def close_gripper(self, squeeze: float = 0.0, force: float = 200.0, wait: float = 1.0):
+    def close_gripper(self, force: float = 100.0, wait: float = 1.0):
         # self.command_gripper_width(max(self.gripper_close_width, squeeze))
         for j in self.gripper_joint_indices:
             p.setJointMotorControl2(
@@ -225,33 +251,222 @@ class PandaGripperPlanner(KukaOmplPlanner):
         #         physicsClientId=self.cid,
         #     )
 
-    # ---------- tasks ----------
-    def open_flap_with_ompl(
+    # ---------- grasp checking ----------
+    def check_grasping_flap(
         self,
         flap_id: int,
-        target_angle_deg: float = 90.0,
+        require_both_fingers: bool = True,
+        require_contact: bool = True,
+        close_tol: float = 0.002,
+        keypoint_tol: Optional[float] = None,
+        min_normal_force: float = 0.0,
+        debug_draw: bool = False,
+        return_info: bool = True,
+    ):
+        """
+        判断夹爪是否“真的夹住了”某个 flap。
+
+        判据（可组合）：
+        1) 接触判据（默认开启）：左右 finger link 与 flap link 有 contactPoints；
+           且（可选）normalForce >= min_normal_force。
+        2) 近距离判据（require_contact=False 时启用）：若没有接触，允许用 getClosestPoints
+           判断 finger 到 flap 的最小距离 <= close_tol。
+        3) keypoint 判据（keypoint_tol 不为 None 时启用）：
+           finger 与 flap 的接触点（positionOnB，落在 flap 上的点）离 oracle keypoint 的距离 <= keypoint_tol。
+
+        返回：
+            - return_info=False: bool
+            - return_info=True : (bool, info_dict)
+        """
+        if self.box_id is None:
+            info = {"ok": False, "reason": "box_id is None"}
+            return (False, info) if return_info else False
+
+        lf = getattr(self, "left_finger_link_index", None)
+        rf = getattr(self, "right_finger_link_index", None)
+        if lf is None or rf is None:
+            info = {"ok": False, "reason": "finger link indices not found", "lf": lf, "rf": rf}
+            return (False, info) if return_info else False
+
+        def _dist3(a, b) -> float:
+            return math.sqrt((a[0]-b[0])**2 + (a[1]-b[1])**2 + (a[2]-b[2])**2)
+
+        # optional keypoint from oracle
+        key_world = None
+        if keypoint_tol is not None and self.oracle_function is not None:
+            try:
+                res = self.oracle_function(flap_id)
+                key_world = res[0]
+            except Exception:
+                key_world = None
+
+        def _analyze_finger(finger_link: int) -> Dict:
+            out = {
+                "finger_link": finger_link,
+                "num_contacts": 0,
+                "num_close": 0,
+                "max_normal_force": 0.0,
+                "min_contact_distance": None,
+                "min_keypoint_distance": None,
+                "best_point_on_flap": None,
+                "engaged": False,
+                "keypoint_ok": True,
+            }
+
+            # 1) strict contact
+            contacts = p.getContactPoints(
+                bodyA=self.robot_id,
+                bodyB=self.box_id,
+                linkIndexA=finger_link,
+                linkIndexB=flap_id,
+                physicsClientId=self.cid,
+            )
+            out["num_contacts"] = len(contacts)
+
+            # parse contacts
+            if contacts:
+                # contact tuple indices (PyBullet):
+                # 6: positionOnB (world), 8: contactDistance, 9: normalForce
+                best_force = -1.0
+                best_ptB = None
+                min_dist = None
+                min_kdist = None
+
+                for c in contacts:
+                    # robust guards
+                    ptB = c[6] if len(c) > 6 else None
+                    cdist = c[8] if len(c) > 8 else None
+                    nforce = float(c[9]) if len(c) > 9 else 0.0
+
+                    if nforce > best_force and ptB is not None:
+                        best_force = nforce
+                        best_ptB = ptB
+
+                    if cdist is not None:
+                        min_dist = cdist if (min_dist is None or cdist < min_dist) else min_dist
+
+                    if key_world is not None and ptB is not None:
+                        kd = _dist3(ptB, key_world)
+                        min_kdist = kd if (min_kdist is None or kd < min_kdist) else min_kdist
+
+                out["max_normal_force"] = max(0.0, best_force)
+                out["best_point_on_flap"] = best_ptB
+                out["min_contact_distance"] = min_dist
+                out["min_keypoint_distance"] = min_kdist
+
+            # 2) near-contact if allowed
+            if (not require_contact) and (out["num_contacts"] == 0):
+                close_pts = p.getClosestPoints(
+                    bodyA=self.robot_id,
+                    bodyB=self.box_id,
+                    distance=close_tol,
+                    linkIndexA=finger_link,
+                    linkIndexB=flap_id,
+                    physicsClientId=self.cid,
+                )
+                out["num_close"] = len(close_pts)
+
+                if close_pts:
+                    # closestPoints tuple usually has:
+                    # 6: positionOnB, 8: contactDistance
+                    best_ptB = None
+                    min_dist = None
+                    min_kdist = None
+                    for c in close_pts:
+                        ptB = c[6] if len(c) > 6 else None
+                        cdist = c[8] if len(c) > 8 else None
+                        if ptB is not None and best_ptB is None:
+                            best_ptB = ptB
+                        if cdist is not None:
+                            min_dist = cdist if (min_dist is None or cdist < min_dist) else min_dist
+                        if key_world is not None and ptB is not None:
+                            kd = _dist3(ptB, key_world)
+                            min_kdist = kd if (min_kdist is None or kd < min_kdist) else min_kdist
+
+                    out["best_point_on_flap"] = out["best_point_on_flap"] or best_ptB
+                    out["min_contact_distance"] = out["min_contact_distance"] if out["min_contact_distance"] is not None else min_dist
+                    out["min_keypoint_distance"] = out["min_keypoint_distance"] if out["min_keypoint_distance"] is not None else min_kdist
+
+            # 3) decide engaged
+            engaged = False
+            if out["num_contacts"] > 0:
+                engaged = (out["max_normal_force"] >= float(min_normal_force))
+            elif not require_contact:
+                # near-contact
+                if out["min_contact_distance"] is not None and out["min_contact_distance"] <= float(close_tol):
+                    engaged = True
+
+            out["engaged"] = engaged
+
+            # 4) keypoint constraint
+            if keypoint_tol is not None:
+                if out["min_keypoint_distance"] is None:
+                    out["keypoint_ok"] = False
+                else:
+                    out["keypoint_ok"] = (out["min_keypoint_distance"] <= float(keypoint_tol))
+
+            return out
+
+        left_info = _analyze_finger(lf)
+        right_info = _analyze_finger(rf)
+
+        def _finger_ok(fi: Dict) -> bool:
+            if not fi["engaged"]:
+                return False
+            if keypoint_tol is not None and not fi["keypoint_ok"]:
+                return False
+            return True
+
+        left_ok = _finger_ok(left_info)
+        right_ok = _finger_ok(right_info)
+
+        ok = (left_ok and right_ok) if require_both_fingers else (left_ok or right_ok)
+
+        if debug_draw:
+            # keypoint green, left contact red, right contact blue
+            if key_world is not None:
+                draw_point(key_world, color=[0, 1, 0], size=0.02, life_time=0)
+            if left_info["best_point_on_flap"] is not None:
+                draw_point(left_info["best_point_on_flap"], color=[1, 0, 0], size=0.02, life_time=0)
+            if right_info["best_point_on_flap"] is not None:
+                draw_point(right_info["best_point_on_flap"], color=[0, 0, 1], size=0.02, life_time=0)
+
+        info = {
+            "ok": ok,
+            "flap_id": flap_id,
+            "require_both_fingers": require_both_fingers,
+            "require_contact": require_contact,
+            "close_tol": close_tol,
+            "keypoint_tol": keypoint_tol,
+            "min_normal_force": min_normal_force,
+            "keypoint": key_world,
+            "left": left_info,
+            "right": right_info,
+        }
+        return (ok, info) if return_info else ok
+
+    # ---------- tasks ----------
+    def reach_flap_with_ompl(
+        self,
+        flap_id: int,
         approach_dist: float = 0.12,
         timeout: float = 4.0,
     ):
-        box = self.foldable_box
+        self.open_gripper()
 
-        # old_box_attached = self.box_attached
-        self.box_attached = 4 # all flaps attached to avoid collision during motion planning
+        # key_start, normal_start, axis_start, extended_start = box.get_flap_keypoint_pose(flap_id)
+        key_start, normal_start, axis_start, extended_start, angle = self.oracle_function(flap_id)
 
-        key_start, normal_start, axis_start, extended_start = box.get_flap_keypoint_pose(
-            flap_id, angle=0.0
-        )
         approach_pos = [
             key_start[i] + extended_start[i] * approach_dist for i in range(3)
         ]
         contact_orn = quat_from_normal_and_axis(extended_start, axis_start)
         # contact_orn = [-i for i in contact_orn]
 
-        self.open_gripper()
-
-        # draw_point(approach_pos, [1, 0, 0], size=0.2, life_time=500)        
+        draw_point(approach_pos, [1, 0, 0], size=0.2, life_time=500)        
         # self.set_robot_config(self.solve_ik_collision_aware(approach_pos, contact_orn, collision=True))
-        path = self.move_to_pose(approach_pos, contact_orn, timeout=timeout, real=True, num_waypoints=1000, optimal=False)
+        # import ipdb; ipdb.set_trace()
+        path = self.move_to_pose(approach_pos, contact_orn, timeout=timeout, real=True, num_waypoints=500, optimal=False, debug=False)
         # import ipdb; ipdb.set_trace()
         if path is None:
             print(f"[Flap] failed to approach flap {flap_id}")
@@ -259,22 +474,34 @@ class PandaGripperPlanner(KukaOmplPlanner):
         for _ in range(10):
             p.stepSimulation(physicsClientId=self.cid)
             time.sleep(1.0 / 240.0)
-        # approach_pos = [
-        #     key_start[i] + extended_start[i] * 0.9* approach_dist for i in range(3)
-        # ]
-        # path = self.move_to_pose(approach_pos, contact_orn, timeout=timeout, real=False, num_waypoints=500)
-        # if path is None:
-        #     print(f"[Flap] failed to approach flap {flap_id}")
-        #     return
-        
-        self.box_attached = flap_id
 
-        self.close_gripper()
-
+    def open_flap_with_ompl(
+        self,
+        flap_id: int,
+        target_angle_deg: float = 120.0,
+        approach_dist: float = 0.12,
+        timeout: float = 4.0,
         motion_planning = False
+    ):
+        
+        # Phase 1: reach out to the flap and attach it 
+        self.box_attached = 4 # 4 means all flaps should be taken into account for collision checking
+
+        self.reach_flap_with_ompl(flap_id, approach_dist=approach_dist, timeout=timeout)
+        self.close_gripper(wait=0.5)
+        while not self.check_grasping_flap(flap_id, debug_draw=True)[0]:
+            self.reach_flap_with_ompl(flap_id, approach_dist=approach_dist, timeout=timeout)
+            self.close_gripper(wait=0.5)
+
+        # Phase 2: lift the flap by opening the gripper while planning motion 
+        self.box_attached = flap_id # the attached flap id is ignored for collision checking
+
         if motion_planning:
             for delta_angle in range(10, int(target_angle_deg)+1, 10):
-                key_goal, normal_goal, axis_goal, extended_goal = box.get_flap_keypoint_pose(
+                # key_goal, normal_goal, axis_goal, extended_goal = box.get_flap_keypoint_pose(
+                #     flap_id, angle=-math.radians(delta_angle)
+                # )
+                key_goal, normal_goal, axis_goal, extended_goal, _ = self.oracle_function(
                     flap_id, angle=-math.radians(delta_angle)
                 )
                 goal_orn = quat_from_normal_and_axis(extended_goal, axis_goal)
@@ -300,8 +527,8 @@ class PandaGripperPlanner(KukaOmplPlanner):
 
                 # p.removeConstraint(flap_constraint, physicsClientId=self.cid)
         else: # using IK interpolation
-            for delta_angle in range(5, int(target_angle_deg)+1, 5):
-                key_goal, normal_goal, axis_goal, extended_goal = box.get_flap_keypoint_pose(
+            for delta_angle in range(-int(math.degrees(self.oracle_function(flap_id)[-1])), int(target_angle_deg)+1, 5):
+                key_goal, normal_goal, axis_goal, extended_goal, _ = self.oracle_function(
                     flap_id, angle=-math.radians(delta_angle)
                 )
                 goal_orn = quat_from_normal_and_axis(extended_goal, axis_goal)
@@ -316,21 +543,57 @@ class PandaGripperPlanner(KukaOmplPlanner):
                 q_start = self.get_current_config()
                 traj = interpolate_joint_line(q_start, q_goal, 90)
                 self.execute_joint_trajectory_real(traj)
-                # self.close_gripper()
-            while True:
-                p.stepSimulation(physicsClientId=self.cid)
-                time.sleep(1.0 / 240.0)
-                break
-        self.close_gripper()
+                ok = self.check_grasping_flap(flap_id, debug_draw=True)
+                if not ok[0]:
+                    print(f"[Flap] lost grasping on flap {flap_id} at angle {delta_angle} deg")
+                    print("retrying...")
+                    self.reach_flap_with_ompl(flap_id, approach_dist=approach_dist, timeout=timeout)
+                    self.close_gripper(wait=0.5)
+
+                # print("[GraspCheck]", ok)
+                # input()
+                self.close_gripper(wait=0.0)
+            # while True:
+            #     p.stepSimulation(physicsClientId=self.cid)
+            #     time.sleep(1.0 / 240.0)
+            #     break
         self.open_gripper()
 
         retreat_pos = [
-            key_goal[i] + extended_goal[i] * approach_dist for i in range(3)
+            key_goal_pulled[i] + extended_goal[i] * approach_dist * 0.7 for i in range(3)
         ]
         q_retreat = self.solve_ik_collision_aware(retreat_pos, goal_orn, collision=True)
         retreat_traj = interpolate_joint_line(
             self.get_current_config(), q_retreat, 45
         )
-        self.execute_joint_trajectory(retreat_traj)
+        self.execute_joint_trajectory_real(retreat_traj)
 
+        # Phase3: fully close the flap to the target angle using stabbing motion
+        for delta_angle in range(-int(math.degrees(self.oracle_function(flap_id)[-1])), 180, 5):
+            key_goal, normal_goal, axis_goal, _, _ = self.oracle_function(
+                flap_id, angle=-math.radians(delta_angle)
+            )
+            goal_orn = quat_from_normal_and_axis([-i for i in normal_goal], axis_goal)
+            draw_point(key_goal, [0, 1, 0], size=0.2, life_time=500)
+            center_pull_dist = 0.12
+            key_goal_pulled = [key_goal[i] - normal_goal[i] * center_pull_dist for i in range(3)]
+
+            q_goal = self.solve_ik_collision_aware(key_goal_pulled, goal_orn, collision=False)
+            # self.set_robot_config(q_goal)
+            # import ipdb; ipdb.set_trace()
+            q_start = self.get_current_config()
+            traj = interpolate_joint_line(q_start, q_goal, 90)
+            self.execute_joint_trajectory_real(traj)
+            self.close_gripper(wait=0.0)
+        # import ipdb; ipdb.set_trace()
+        
+        retreat_pos = [
+            key_goal_pulled[i] - normal_goal[i] * approach_dist  for i in range(3)
+        ]
+        q_retreat = self.solve_ik_collision_aware(retreat_pos, goal_orn, collision=True)
+        retreat_traj = interpolate_joint_line(
+            self.get_current_config(), q_retreat, 90
+        )
+        self.execute_joint_trajectory_real(retreat_traj)
+        # import ipdb; ipdb.set_trace()
         self.box_attached = 4
