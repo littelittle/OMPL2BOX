@@ -1,5 +1,6 @@
 from typing import List
 import pybullet as p
+from ompl.geometric import PathGeometric
 
 def interpolate_joint_line(q_from: List[float], q_to: List[float], steps: int):
     """Joint-space linear interpolation including endpoints."""
@@ -25,3 +26,12 @@ def draw_point(pos, color=[1, 0, 0], size=0.01, life_time=0):
         lineWidth=3,
         lifeTime=life_time
     )
+
+def omplpath2traj(path: PathGeometric, ndof: int=7)-> List[List[float]]:
+    num_states = path.getStateCount()
+    traj = []
+    for i in range(num_states):
+        state = path.getState(i)
+        q = [float(state[j]) for j in range(ndof)]
+        traj.append(q)
+    return traj

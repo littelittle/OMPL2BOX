@@ -2,7 +2,7 @@
 
 from .foldable_box import FoldableBox
 from .suck_planner import KukaOmplPlanner
-from .utils.path import interpolate_joint_line
+from .utils.path import interpolate_joint_line, omplpath2traj
 from .grip_planner import PandaGripperPlanner
 
-__all__ = ["FoldableBox", "KukaOmplPlanner", "interpolate_joint_line", "PandaGripperPlanner"]
+__all__ = ["FoldableBox", "KukaOmplPlanner", "interpolate_joint_line", "PandaGripperPlanner", 'omplpath2traj']

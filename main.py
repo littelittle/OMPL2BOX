@@ -10,6 +10,7 @@ from robot_sim import (
     KukaOmplPlanner,
     PandaGripperPlanner,
     interpolate_joint_line,
+    omplpath2traj,
     FoldableBox,
 )
 
@@ -26,8 +27,9 @@ def run_unpack(planner):
         planner.open_flap_with_ompl(i)
         # interp_to_grasp = interpolate_joint_line(planner.get_current_config(), planner.home_config, 60)
         # planner.execute_joint_trajectory_real(interp_to_grasp, 0.1)
-        path = planner.plan(planner.get_current_config(), planner.home_config, timeout=100, num_waypoints=500, optimal=False) 
-        planner.execute_path_real(path)
+        path = planner.plan(planner.get_current_config(), planner.home_config, timeout=100, num_waypoints=500, optimal=False)
+        traj = omplpath2traj(path)
+        planner.execute_joint_trajectory_real(traj)
         print(f"Flap {i} opened.")
 
 def run_pick_place(planner: KukaOmplPlanner, cfg: dict):

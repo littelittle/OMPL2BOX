@@ -6,10 +6,13 @@ import pybullet as p
 import pybullet_data
 from ompl import base as ob
 from ompl import geometric as og
+import vamp
+import numpy as np
 
 from .foldable_box import FoldableBox
 from .utils.vector import quat_from_normal_and_axis
-from .utils.path import interpolate_joint_line, draw_point
+from .utils.path import interpolate_joint_line, draw_point, omplpath2traj
+# from main_vamp import build_vamp_env_from_pybullet, pybullet_depth_to_pointcloud, execute_position_control
 
 class KukaOmplPlanner:
     """
@@ -53,8 +56,8 @@ class KukaOmplPlanner:
         self.home_config = [0.0] * self.ndof
 
         # ---------- Controller setup ----------
-        self.control_dt = 1.0 / 400.0  
-        self.segment_duration = 0.01    #  the time duration to move between two waypoints
+        self.control_dt = 1.0 / 240.0 
+        self.segment_duration = 0.05    #  the time duration to move between two waypoints
         self.max_torque = 700.0        
         self.position_gain = 0.2       # Using PD position control
         self.velocity_gain = 1.0       
@@ -240,116 +243,6 @@ class KukaOmplPlanner:
         print("[OMPL] path length (in joint space):", path.length())
         return path
 
-    def execute_path(self, path, dt: float = 1.0 / 240.0, substeps=100):
-        if path is None:
-            return
-        print("[PyBullet] executing trajectory with", path.getStateCount(), "waypoints")
-        for i in range(path.getStateCount()):
-            state = path.getState(i)
-            q = [float(state[j]) for j in range(self.ndof)]
-            self.set_robot_config(q)
-            # for _ in range(substeps):
-            #     p.stepSimulation(physicsClientId=self.cid)
-            time.sleep(dt)
-
-    def execute_path_real(
-        self,
-        path,
-        dt: float = None,
-        segment_duration: float = None,
-        interpolate: bool = False,
-        DRAW_DEBUG_LINES: bool = False,
-    ):
-        """用 position control 执行 OMPL 规划出来的关节轨迹。
-
-        - path: OMPL 的 PathGeometric
-        - dt:   每次 stepSimulation 的时间间隔（默认用 self.control_dt）
-        - segment_duration: 每两个 waypoint 之间走多久（秒）
-        - interpolate: 是否在两个 waypoint 之间做线性插值
-        """
-        # import time
-        # start_time = time.time()
-        if path is None:
-            return
-
-        if dt is None:
-            dt = self.control_dt
-        if segment_duration is None:
-            segment_duration = self.segment_duration
-
-        steps_per_segment = max(1, int(segment_duration / dt))
-        num_states = path.getStateCount()
-
-        print(
-            "[PyBullet] executing trajectory with",
-            path.getStateCount(),
-            "waypoints,",
-            steps_per_segment,
-            "steps per segment",
-        )
-
-        if DRAW_DEBUG_LINES:
-            q_backup = self.get_current_config()
-            ee_positions = []
-
-            for i in range(num_states):
-                state = path.getState(i)
-                q = [float(state[j]) for j in range(self.ndof)]
-
-                self.set_robot_config(q)
-
-                link_state = p.getLinkState(
-                    self.robot_id,
-                    self.ee_link_index,
-                    physicsClientId=self.cid,
-                )
-                ee_pos = link_state[0]  # the world position of end-effector link
-                ee_positions.append(ee_pos)
-
-            self.set_robot_config(q_backup)
-
-            for i in range(len(ee_positions) - 1):
-                p.addUserDebugLine(
-                    ee_positions[i],
-                    ee_positions[i + 1],
-                    [1, 0, 0],      # 红色
-                    lineWidth=5,
-                    lifeTime=100,
-                    physicsClientId=self.cid,
-                )
-
-        q_curr = self.get_current_config()
-        for i in range(path.getStateCount()):
-            print("the wrist joint angle:", self.get_current_config()[5])
-            print("[PyBullet] moving to waypoint", i + 1, "/", path.getStateCount())
-            state = path.getState(i)
-            q_next = [float(state[j]) for j in range(self.ndof)]
-
-            # 在 q_curr -> q_next 之间走 steps_per_segment 步
-            for k in range(steps_per_segment):
-                if interpolate:
-                    alpha = float(k + 1) / float(steps_per_segment)
-                    q_cmd = [
-                        q_curr[d] + alpha * (q_next[d] - q_curr[d])
-                        for d in range(self.ndof)
-                    ]
-                else:
-                    # 不插值的话，直接对 q_next 做 position control
-                    q_cmd = q_next
-
-                # 把这一时刻的目标位置发给电机
-                self._set_joint_targets_position_control(q_cmd)
-
-                # 让物理引擎滚动一步（这一步里会解约束、算接触等）
-                p.stepSimulation(physicsClientId=self.cid)
-                time.sleep(dt)
-
-            # 段结束，更新当前 q
-            q_curr = q_next
-        # time_elapsed = time.time() - start_time
-        # print(f"[PyBullet] trajectory execution finished in {time_elapsed:.3f} seconds")
-        # import ipdb; ipdb.set_trace()
-
     def execute_joint_trajectory(self, qs: List[List[float]], dt: float = 1.0 / 240.0):
         for q in qs:
             self.set_robot_config(q)
@@ -362,6 +255,7 @@ class KukaOmplPlanner:
         dt: float = None,
         segment_duration: float = None,
         interpolate: bool = True,
+        DRAW_DEBUG_LINES: bool = False,
     ):
         if dt is None:
             dt = self.control_dt
@@ -374,6 +268,25 @@ class KukaOmplPlanner:
             return
 
         q_curr = self.get_current_config()
+
+        if DRAW_DEBUG_LINES:
+            q_backup = self.get_current_config()
+            ee_positions = []
+            for q in qs:
+                self.set_robot_config(q)
+                link_state = p.getLinkState(self.robot_id, self.ee_link_index, physicsClientId=self.cid)
+                ee_pos = link_state[0]  # the world position of end-effector link
+                ee_positions.append(ee_pos)
+            self.set_robot_config(q_backup)
+            for i in range(len(ee_positions) - 1):
+                p.addUserDebugLine(
+                    ee_positions[i],
+                    ee_positions[i + 1],
+                    [1, 0, 0],      # 红色
+                    lineWidth=5,
+                    lifeTime=100,
+                    physicsClientId=self.cid,
+                )
 
         for q_next in qs:
             assert len(q_next) == self.ndof
@@ -533,7 +446,6 @@ class KukaOmplPlanner:
             self.set_robot_config(q_start)
             while True:
                 p.stepSimulation()
-            return None
 
         if not goal_valid:
             print("[IK] goal configuration collides with environment, abort plan")
@@ -541,7 +453,6 @@ class KukaOmplPlanner:
             self.set_robot_config(q_goal)
             while True:
                 p.stepSimulation()
-            return None
 
         path = self.plan(q_start, q_goal, timeout=timeout, num_waypoints=num_waypoints, optimal=optimal) 
         if path is not None:
@@ -552,11 +463,12 @@ class KukaOmplPlanner:
                     self.set_robot_config(q)
                     for _ in range(5):
                         p.stepSimulation(physicsClientId=self.cid)
-                    # time.sleep(0.5)
             elif real:
-                self.execute_path_real(path)
+                traj = omplpath2traj(path)
+                self.execute_joint_trajectory_real(traj)
             else:
-                self.execute_path(path)
+                traj = omplpath2traj(path)
+                self.execute_joint_trajectory(path)
         return path
 
     def get_ee_contact_offset(self, flap_id):
@@ -760,8 +672,9 @@ class KukaOmplPlanner:
         if path_open is None:
             print(f"[Flap] failed to plan opening motion for flap {flap_id}")
             p.removeConstraint(flap_constraint, physicsClientId=self.cid)
-            return      
-        self.execute_path_real(path_open)
+            return   
+        traj = omplpath2traj(path_open)   
+        self.execute_joint_trajectory_real(traj)
 
         # import ipdb; ipdb.set_trace()
 
