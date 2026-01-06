@@ -58,7 +58,7 @@ class KukaOmplPlanner:
         # ---------- Controller setup ----------
         self.control_dt = 1.0 / 240.0 
         self.segment_duration = 0.05    #  the time duration to move between two waypoints
-        self.max_torque = 700.0        
+        self.max_torque = 100.0        
         self.position_gain = 0.2       # Using PD position control
         self.velocity_gain = 1.0       
 

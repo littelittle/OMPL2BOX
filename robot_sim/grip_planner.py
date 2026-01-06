@@ -1,3 +1,4 @@
+import sys
 import math
 import time
 from pathlib import Path
@@ -17,9 +18,10 @@ from .foldable_box import FoldableBox
 from .utils.vector import quat_from_normal_and_axis
 from .utils.path import interpolate_joint_line, draw_point, omplpath2traj
 from .utils.pointcloud import pts2obj
+from .generic_planner import GenericPlanner
 from .suck_planner import KukaOmplPlanner
 
-class PandaGripperPlanner(KukaOmplPlanner):
+class PandaGripperPlanner(GenericPlanner):
     """
     Franka Panda-based planner with an actuated parallel gripper.
     The core OMPL + PyBullet flow mirrors the KUKA planner but adds
@@ -80,21 +82,10 @@ class PandaGripperPlanner(KukaOmplPlanner):
         self.velocity_gain = 1.0
 
         p.setPhysicsEngineParameter(
-            numSolverIterations=50,
+            numSolverIterations=100,
             physicsClientId=self.cid,
         )
         self.set_robot_config(self.home_config)
-
-        # Disable gripper joint motors for direct control
-        # for j in self.gripper_joint_indices:
-        #     p.setJointMotorControl2(
-        #         bodyUniqueId=self.robot_id,
-        #         jointIndex=j,
-        #         controlMode=p.VELOCITY_CONTROL,
-        #         targetVelocity=0.0,
-        #         force=0.0,             
-        #         physicsClientId=self.cid,
-        #     )
 
         # ---------- OMPL setup ----------
         self.space = ob.RealVectorStateSpace(self.ndof)
@@ -151,7 +142,7 @@ class PandaGripperPlanner(KukaOmplPlanner):
                 if j==5: # the wrist joint has weird limits
                     ul = 4.8
                 if j==1: # the second joint is better limited
-                    ll, ul = -2.0, 2.0
+                    ll, ul = -2.2, 2.2
                 if j==6: # the last joint is better limited
                     ll, ul = -3.14, 3.14
                 if ul < ll or (ll == 0 and ul == -1): # for simplicty, ignore limits from URDF
@@ -190,46 +181,49 @@ class PandaGripperPlanner(KukaOmplPlanner):
         )
         return [s[0] for s in states]
 
-    def execute_position_control(self, p, robot_id, joint_indices, q_traj,
-            kp=0.2, kd=1.0,
-            max_force=87.0,
-            steps_per_waypoint=10,
-            sleep_dt=None
-        ):
-        if np.isscalar(max_force):
-            forces = [float(max_force)] * len(joint_indices)
-        else:
-            forces = list(map(float, max_force))
-
-        for q in q_traj:
-            q = list(map(float, q))
-            for _ in range(steps_per_waypoint):
-                p.setJointMotorControlArray(
-                    bodyUniqueId=robot_id,
-                    jointIndices=joint_indices,
-                    controlMode=p.POSITION_CONTROL,
-                    targetPositions=q,
-                    positionGains=[kp]*len(joint_indices),
-                    velocityGains=[kd]*len(joint_indices),
-                    forces=forces,
-                )
-                p.stepSimulation()
-                if sleep_dt is not None:
-                    time.sleep(sleep_dt)
-
-    def pybullet_depth_to_pointcloud(self, p, width=320, height=240,
-                                 cam_pos=(1.0, 0.0, 0.8),
-                                 target=(0.0, 0.0, 0.2),
-                                 up=(0,0,1),
-                                 fov=60, near=0.01, far=3.0):
+    # --------- Pybullet + VAMP helpers -----------
+    def pybullet_depth_to_pointcloud(
+        self, p, width=320, height=240,
+        cam_pos=(1.0, 0.0, 0.8),
+        target=(0.0, 0.0, 0.2),
+        up=(0,0,1),
+        fov=60, near=0.01, far=3.0,
+        *, 
+        exclude_body_links: Optional[List[Tuple[int, int]]] = None,   # [(bodyUniqueId, linkIndex), ...]
+        exclude_bodies: Optional[List[int]] = None,                   # [bodyUniqueId, ...]
+    ):
         view = p.computeViewMatrix(cam_pos, target, up)
         proj = p.computeProjectionMatrixFOV(fov, width/height, near, far)
+        flags = p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX
 
-        _, _, _, depth_buf, seg = p.getCameraImage(width, height, view, proj)
+        _, _, _, depth_buf, seg = p.getCameraImage(width, height, view, proj, flags=flags)
         depth_buf = np.asarray(depth_buf).reshape(height, width)
         seg = np.asarray(seg).reshape(height, width)
 
-        valid = (seg != self.plane_id) & (seg > 0) # & (seg != self.robot_id) 
+        # valid = (seg != self.plane_id) & (seg > 0) # & (seg != self.robot_id) 
+        # 先屏蔽背景（有些环境 seg 会是 -1）
+        base_valid = (seg >= 0)
+
+        # 解码 objectUniqueId / linkIndex
+        obj_uid = np.full_like(seg, -1, dtype=np.int32)
+        link_idx = np.full_like(seg, -1, dtype=np.int32)
+        seg_v = seg[base_valid]
+        obj_uid[base_valid] = seg_v & ((1 << 24) - 1)
+        link_idx[base_valid] = (seg_v >> 24) - 1
+
+        # 基础过滤：去掉 plane / 背景
+        valid = base_valid & (obj_uid != self.plane_id) & (obj_uid >= 0)
+
+        # 可选：去掉整个人/机器人（你后面还有 filter_self_from_pointcloud，这里去掉能省点）
+        if exclude_bodies:
+            for bid in exclude_bodies:
+                valid &= (obj_uid != int(bid))
+
+        # 核心：去掉被抓 flap link 的像素
+        if exclude_body_links:
+            for bid, lid in exclude_body_links:
+                valid &= ~((obj_uid == int(bid)) & (link_idx == int(lid)))
+
 
         # OpenGL: pixel -> NDC
         u, v = np.meshgrid(np.arange(width), np.arange(height))
@@ -269,84 +263,102 @@ class PandaGripperPlanner(KukaOmplPlanner):
 
         return env, build_time
 
-    def move_to_pose_vamp(self, pos, orn, timeout: float = 4.0, real=True, debug=False, num_waypoints=1000, optimal: bool = False, attachid=4):
-        q_start = self.get_current_config()
-        q_goal = self.solve_ik_collision_aware(pos, orn)
-        if q_goal is None:
+    # ---------- OMPL Planning ----------
+    def plan_ompl(self, q_start: List[float], q_goal: List[float], timeout: float = 3.0, num_waypoints=1000, optimal: bool = False):
+        assert len(q_start) == self.ndof and len(q_goal) == self.ndof
+
+        def clamp_and_warn(name, q):
+            q_clamped = list(q)
+            for i in range(self.ndof):
+                lb = float(self.lower_limits[i])
+                ub = float(self.upper_limits[i])
+                if q[i] < lb or q[i] > ub:
+                    print(f"[WARN] {name} joint {i} out of bounds: {q[i]:.5f} not in [{lb:.5f}, {ub:.5f}]")
+                    # 简单粗暴：夹到边界
+                    if lb == -3.14 and ub == 3.14:
+                        q_clamped[i] = q[i] - ((q[i]+3.14)//6.28) * 6.28
+                    else:
+                        q_clamped[i] = min(max(q[i], lb), ub)
+            return q_clamped
+        
+        q_start = clamp_and_warn("q_start", q_start)
+        q_goal = clamp_and_warn("q_goal", q_goal)
+
+        start = ob.State(self.space)
+        goal = ob.State(self.space)
+        for i in range(self.ndof):
+            start[i] = float(q_start[i])
+            goal[i] = float(q_goal[i])
+
+        pdef = ob.ProblemDefinition(self.si)
+        pdef.setStartAndGoalStates(start, goal)
+
+        if optimal:
+            planner = og.InformedRRTstar(self.si)
+        else:
+            planner = og.RRTConnect(self.si)
+        planner.setRange(0.2)
+        planner.setProblemDefinition(pdef)
+        planner.setup()
+
+        print("[OMPL] solving ...")
+        solved = planner.solve(timeout)
+
+        if not solved:
+            print("[OMPL] no solution found")
             return None
 
-        q_start = np.array(q_start)
-        q_goal =  np.array(q_goal)
+        path = pdef.getSolutionPath()
+        path.interpolate(num_waypoints)
+        print("[OMPL] path length (in joint space):", path.length())
+        return path
 
-        # build vamp environment from pybullet
-        pts = self.pybullet_depth_to_pointcloud(p, cam_pos=(1.0, 0.0, 0.8))
+    # ---------- VAMP Planning-----------
+    def plan_vamp(self, q_start: List[float], q_goal: List[float], *, rebuild_env: bool = True, env=None, use_ee_in_nn_metric: bool=True):
+        q_start = np.array(q_start, dtype=np.float64)
+        q_goal  = np.array(q_goal,  dtype=np.float64)
 
-        env, build_time = self.build_vamp_env_from_pybullet(pts, q_start)
 
-        start_valid = vamp.panda.validate(q_start, env)
-        goal_valid = vamp.panda.validate(q_goal, env)
-
-        self.set_robot_config(q_start)
-
-        if not start_valid:
-            print("[IK] start configuration is in collision, abort plan")
-            print("q_start:", q_start)
-            self.set_robot_config(q_start)
-            while True:
-                p.stepSimulation()
-
-        if not goal_valid:
-            print("[IK] goal configuration collides with environment, abort plan")
-            print("q_goal:", q_goal)
-            self.set_robot_config(q_goal)
-            while True:
-                p.stepSimulation()
-
+        if env is None or rebuild_env:
+            exclude_links = []
+            if self.box_id is not None and isinstance(self.box_attached, int) and (0 <= self.box_attached < 4):
+                exclude_links.append((self.box_id, self.box_attached))
+            pts = self.pybullet_depth_to_pointcloud(p, cam_pos=(1.0, 0.0, 0.8), exclude_body_links=exclude_links, exclude_bodies=[self.robot_id])
+            env, _build_time = self.build_vamp_env_from_pybullet(pts, q_start)
+        
+        if not vamp.panda.validate(q_start, env):
+            print('[VAMP] start state invalid!')
+            return None
+        # if not vamp.panda.validate(q_goal, env):
+        #     print('[VAMP] goal state invalid!')
+        #     return None
+        
         W = vamp.panda.DistanceWeights()
-        W.joint = [0.1] + [0.1] * (vamp.panda.dimension() - 1)
-        W.ee_rpy = [1, 1, 1]
-        W.ee_pos = [1, 1, 1]
+        # W.joint = [0.1] + [0.1] * (vamp.panda.dimension() - 1)
+        # W.ee_rpy = [0, 0, 1]
+        # W.ee_pos = [0, 0, 1]
+        W.ee_rpy = [1,0,0]
+        W.ee_pos = [1,0,0]
+
         settings = vamp.RRTCSettings()
         rng = vamp.panda.xorshift(); rng.reset()
-        start_time = time.time()
-        res = vamp.panda.rrtc(q_start, q_goal, env, settings, rng, W, use_ee_in_nn_metric=True)
-        print(f"[VAMP] planning time: {time.time() - start_time:.3f} sec")
 
-        start_time = time.time()
+        res = vamp.panda.rrtc(q_start, q_goal, env, settings, rng, W, use_ee_in_nn_metric=use_ee_in_nn_metric)
+        if res is None or res.path is None:
+            print('[VAMP] planning failed!')
+            return None
+        
         simple = vamp.panda.simplify(res.path, env, vamp.SimplifySettings(), rng)
         simple.path.interpolate_to_resolution(vamp.panda.resolution())
-        print(f"[VAMP] simplification time: {time.time() - start_time:.3f} sec")
         q_traj = []
         for i in range(simple.path.__len__()):
-            q = simple.path[i]
-            if not vamp.panda.validate(q, env):
-                print(f"[VAMP] Warning: trajectory waypoint {i} is in collision!")
+            q = [float(x) for x in simple.path[i]]
             if not self.is_state_valid(q):
-                print(f"[VAMP] Warning: trajectory waypoint {i} is invalid in PyBullet!")
+                print(f"[VAMP] Warning: trajectory waypoint {i} is in collision!")
+                # return None
             q_traj.append(q)
-            for _ in range(10):
-                p.setJointMotorControlArray(
-                    bodyUniqueId=self.robot_id,
-                    jointIndices=self.joint_indices,
-                    controlMode=p.POSITION_CONTROL,
-                    targetPositions=q,
-                    positionGains=[0.5]*len(self.joint_indices),
-                    velocityGains=[0.5]*len(self.joint_indices),
-                    forces=[87.0]*len(self.joint_indices),
-                )
-                p.stepSimulation()
-                # if sleep_dt is not None:
-                #     time.sleep(sleep_dt)
-        # self.execute_position_control(
-        #     q_traj=q_traj, p=p, robot_id=self.robot_id,
-        #     joint_indices=list(range(vamp.panda.dimension())),
-        #     kp=0.5, kd=1.0,
-        #     max_force=87.0,
-        #     steps_per_waypoint=50,
-        #     sleep_dt=0.01
-        # )
 
-        return q_traj
+        return q_traj, env
 
     # ---------- gripper control ----------
     def command_gripper_width(self, width: float, force: float = 40.0, wait: float = 1.0):
@@ -390,32 +402,40 @@ class PandaGripperPlanner(KukaOmplPlanner):
             )
         self.command_gripper_width(self.gripper_open_width)
 
-    def close_gripper(self, force: float = 100.0, wait: float = 1.0):
-        # self.command_gripper_width(max(self.gripper_close_width, squeeze))
+    def close_gripper(self, force: float = 100.0, wait: float = 1.0, flap_id=None, min_normal_force=20.0): 
+        # TODO: figure out how the coefficient of friction affect the behaviour of the contact
+        # p.changeDynamics(self.robot_id, self.gripper_joint_indices[0],  lateralFriction=1.0, spinningFriction=0.05, rollingFriction=0.05)
+        # p.changeDynamics(self.robot_id, self.gripper_joint_indices[1], lateralFriction=2.0, spinningFriction=0.05, rollingFriction=0.05)
+        # if flap_id:
+        #     p.changeDynamics(self.box_id, flap_id, lateralFriction=1.5, spinningFriction=0.02, rollingFriction=0.02)
+
         for j in self.gripper_joint_indices:
             p.setJointMotorControl2(
                 bodyUniqueId=self.robot_id,
                 jointIndex=j,
-                controlMode=p.POSITION_CONTROL,
-                targetPosition=0,
+                controlMode=p.VELOCITY_CONTROL,
+                targetVelocity=-abs(0.02), 
+                velocityGain=1.0,
                 force=force,
-                positionGain=0.6,
-                velocityGain=1,
                 physicsClientId=self.cid,
             )
         steps = int(wait / self.control_dt) if hasattr(self, "control_dt") else 60
         for _ in range(steps):
             p.stepSimulation(physicsClientId=self.cid)
-            time.sleep(self.control_dt)
-        # for j in self.gripper_joint_indices:
-        #     p.setJointMotorControl2(
-        #         bodyUniqueId=self.robot_id,
-        #         jointIndex=j,
-        #         controlMode=p.VELOCITY_CONTROL,
-        #         targetVelocity=0.0,
-        #         force=40.0,             
-        #         physicsClientId=self.cid,
-        #     )
+            # time.sleep(self.control_dt)
+            # print(p.getJointInfo(self.robot_id, self.gripper_joint_indices[0], physicsClientId=self.cid))
+            # sys.exit()
+            if flap_id:
+                ok, _ = self.check_grasping_flap(
+                    flap_id,
+                    require_both_fingers=True,
+                    min_normal_force=min_normal_force,
+                    return_info=True,
+                )
+                if ok:
+                    print(f"[DEBUG] THE TARGET FORCE {min_normal_force}N HAS BEEN REACHED EARLY STOPPING IN CLOSING LOOP")
+                    # import ipdb; ipdb.set_trace()
+                    break
 
     # ---------- grasp checking ----------
     def check_grasping_flap(
@@ -516,6 +536,7 @@ class PandaGripperPlanner(KukaOmplPlanner):
                         min_kdist = kd if (min_kdist is None or kd < min_kdist) else min_kdist
 
                 out["max_normal_force"] = max(0.0, best_force)
+                # import ipdb; ipdb.set_trace()
                 out["best_point_on_flap"] = best_ptB
                 out["min_contact_distance"] = min_dist
                 out["min_keypoint_distance"] = min_kdist
@@ -611,11 +632,139 @@ class PandaGripperPlanner(KukaOmplPlanner):
         }
         return (ok, info) if return_info else ok
 
-    # ---------- tasks ----------
+    # ---------- utils --------------
+    def _wrap_into_limits(self, q, q_ref):
+        qn = list(q)
+        period = 2.0 * math.pi
+
+        for i in range(self.ndof):
+            lb = float(self.lower_limits[i])
+            ub = float(self.upper_limits[i])
+
+            jidx = self.joint_indices[i]
+            jtype = p.getJointInfo(self.robot_id, jidx, physicsClientId=self.cid)[2]
+
+            # prismatic: 直接 clamp
+            if jtype != p.JOINT_REVOLUTE:
+                qn[i] = min(max(qn[i], lb), ub)
+                continue
+
+            # 找所有 q + 2πk 落在 [lb,ub] 的整数 k
+            k_min = math.ceil((lb - qn[i]) / period)
+            k_max = math.floor((ub - qn[i]) / period)
+
+            if k_min <= k_max:
+                # 选一个最接近参考角（当前关节角）的解，避免跳变
+                best = None
+                best_err = 1e18
+                for k in range(k_min, k_max + 1):
+                    cand = qn[i] + period * k
+                    err = abs(cand - float(q_ref[i]))
+                    if err < best_err:
+                        best_err = err
+                        best = cand
+                qn[i] = best
+
+        return qn
+
+    def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=2000):
+        import random
+        base_rest = self.rest_pose[:]
+
+        for t in range(max_trials):
+            if t == 1:
+                rest = base_rest
+            else:
+                # add some noise to the rest pose 
+                rest = [
+                    r + random.uniform(-0.1, 0.1) for r in base_rest
+                ]
+
+            ik = p.calculateInverseKinematics(
+                self.robot_id,
+                self.ee_link_index,
+                pos,
+                orn,
+                lowerLimits=self.lower_limits,
+                upperLimits=self.upper_limits,
+                jointRanges=[u - l for l, u in zip(self.lower_limits, self.upper_limits)],
+                restPoses=rest,
+                physicsClientId=self.cid,
+                maxNumIterations=1000,
+                residualThreshold=1e-4,
+            )
+            q_candidate = list(ik[: self.ndof])
+
+            q_candidate = self._wrap_into_limits(q_candidate, self.home_config)
+
+            bad = False
+
+            # check in range
+            for i in range(self.ndof):
+                if q_candidate[i] < self.lower_limits[i] - 1e-5 or q_candidate[i] > self.upper_limits[i] + 1e-5:
+                    print(f"[IK] joint {i} out of bounds: {q_candidate[i]:.5f} not in [{self.lower_limits[i]:.5f}, {self.upper_limits[i]:.5f}]")
+                    bad = True
+                    break
+            if bad:
+                continue
+
+            # import ipdb; ipdb.set_trace()
+            if not collision or self.is_state_valid(q_candidate) :
+                return q_candidate
+        print("[IK] failed to find collision-free IK solution after", max_trials, "trials")
+        # import ipdb; ipdb.set_trace()
+        return None 
+
+    def move_to_pose_unified(
+        self,
+        pos, orn,
+        *,
+        planner: Literal['OMPL', 'VAMP'] = "OMPL",          # "ompl" or "vamp"
+        timeout: float = 4.0,
+        ik_collision: bool = True,
+        execute: bool = True,
+        vamp_env=None,
+        rebuild_vamp_env: bool = True,
+    ):
+        q_start = self.get_current_config()
+        q_goal = self.solve_ik_collision_aware(pos, orn, collision=ik_collision)
+        if q_goal is None:
+            return None, vamp_env
+
+        if not self.is_state_valid(q_start):
+            return None, vamp_env
+        if not self.is_state_valid(q_goal) and ik_collision:
+            return None, vamp_env
+
+        if planner == "OMPL":
+            path = self.plan_ompl(q_start, q_goal, timeout=timeout, num_waypoints=200, optimal=False)
+            if path is None:
+                return None, vamp_env
+            # OMPL path -> q_traj
+            q_traj = []
+            for i in range(path.getStateCount()):
+                s = path.getState(i)
+                q_traj.append([float(s[j]) for j in range(self.ndof)])
+
+        elif planner == "VAMP":
+            out = self.plan_vamp(q_start, q_goal, rebuild_env=rebuild_vamp_env, env=vamp_env)
+            if out is None:
+                return None, vamp_env
+            q_traj, vamp_env = out
+
+        else:
+            raise ValueError(f"unknown planner: {planner}")
+
+        if execute:
+            self.execute_joint_trajectory_real(q_traj)
+
+        return q_traj, vamp_env
+
+    # ---------- primitives ----------
     def reach_flap(
         self,
         flap_id: int,
-        approach_dist: float = 0.12,
+        approach_dist: float = 0.10,
         timeout: float = 4.0,
         PL: Literal['OMPL', 'VAMP'] = 'OMPL',
     ):
@@ -627,63 +776,79 @@ class PandaGripperPlanner(KukaOmplPlanner):
         contact_orn = quat_from_normal_and_axis(extended_start, axis_start)
         draw_point(approach_pos, [1, 0, 0], size=0.2, life_time=500)  
 
-        if PL == 'OMPL':
-            path = self.move_to_pose(approach_pos, contact_orn, timeout=timeout, real=True, num_waypoints=750, optimal=False, debug=False)
-        elif PL == 'VAMP':
-            path = self.move_to_pose_vamp(approach_pos, contact_orn, timeout=timeout, real=True, num_waypoints=750, optimal=False, debug=False)
+        path, _ = self.move_to_pose_unified(approach_pos, contact_orn, planner=PL)
         
         if path is None:
-            print(f"[Flap] failed to approach flap {flap_id}")
+            print(f"[Flap] failed to approach flap {flap_id} using {PL}")
             return
         for _ in range(10):
             p.stepSimulation(physicsClientId=self.cid)
             time.sleep(1.0 / 240.0)
 
-    def open_flap_with_ompl(
+    def close_flap(
         self,
         flap_id: int,
         target_angle_deg: float = 120.0,
         approach_dist: float = 0.12,
         timeout: float = 4.0,
-        motion_planning = False,
+        motion_planning = True,
         PL: Literal['OMPL', 'VAMP'] = 'OMPL',
     ):
         
         # Phase 1: reach out to the flap and attach it 
         self.box_attached = 4 # 4 means all flaps should be taken into account for collision checking
         self.reach_flap(flap_id, approach_dist=approach_dist, timeout=timeout, PL=PL)
-        self.close_gripper(wait=0.5)
+        self.close_gripper(wait=5, flap_id=flap_id)
         while not self.check_grasping_flap(flap_id, debug_draw=True)[0]:
             self.reach_flap(flap_id, approach_dist=approach_dist, timeout=timeout, PL=PL)
-            self.close_gripper(wait=0.5)
+            self.close_gripper(wait=5, flap_id=flap_id)
 
         # Phase 2: lift the flap by opening the gripper while planning motion 
         self.box_attached = flap_id # the attached flap id is ignored for collision checking
         if motion_planning:
-            for delta_angle in range(10, int(target_angle_deg)+1, 10):
-                # key_goal, normal_goal, axis_goal, extended_goal = box.get_flap_keypoint_pose(
-                #     flap_id, angle=-math.radians(delta_angle)
-                # )
+            stride=10
+            while True:
+                ok = self.check_grasping_flap(flap_id, debug_draw=True)
+                if not ok[0]:
+                    self.box_attached = 4
+                    print(f"[Flap] lost grasping on flap {flap_id} at angle {current_degree} deg")
+                    print("retrying...")
+                    self.reach_flap(flap_id, approach_dist=approach_dist, timeout=timeout)
+                    self.close_gripper(wait=5)
+                    self.box_attached = flap_id
+                _, _, _, _, current_angle = self.oracle_function(flap_id)
+                current_degree = math.degrees(current_angle)
+                if abs(current_degree) > target_angle_deg:
+                    break
                 key_goal, normal_goal, axis_goal, extended_goal, _ = self.oracle_function(
-                    flap_id, angle=-math.radians(delta_angle)
+                    flap_id, angle=math.radians(current_degree-10)
                 )
+                print(f"current degree is {current_degree}")
                 goal_orn = quat_from_normal_and_axis(extended_goal, axis_goal)
-
                 center_pull_dist = 0.12
                 key_goal_pulled = [
                     key_goal[i] + extended_goal[i] * center_pull_dist
                     for i in range(3)
                 ]
 
-                q_start = self.get_current_config()
-                # self.box_attached = 4
                 q_goal = self.solve_ik_collision_aware(key_goal_pulled, goal_orn, collision=False)
-                # self.set_robot_config(q_start)
+                # self.close_gripper(wait=0.0)
 
-                path_open = self.plan(q_start, q_goal, timeout=timeout, num_waypoints=200, optimal=False)
-                traj = omplpath2traj(path_open)
-                self.execute_joint_trajectory_real(traj)
-
+                q_start = self.get_current_config()
+                # import ipdb; ipdb.set_trace()
+                if PL == 'OMPL':
+                    path = self.plan_ompl(q_start, q_goal, num_waypoints=50)
+                    # OMPL path -> q_traj
+                    q_traj = []
+                    for i in range(path.getStateCount()):
+                        s = path.getState(i)
+                        q_traj.append([float(s[j]) for j in range(self.ndof)])
+                    path = q_traj
+                elif PL == 'VAMP':
+                    path, _ = self.plan_vamp(q_start, q_goal)
+                print("the lenght of the path is: ", len(path))
+                # traj = omplpath2traj(path_open)
+                self.execute_joint_trajectory_real(path, segment_duration=0.1)
         else: # using IK interpolation
             for delta_angle in range(-int(math.degrees(self.oracle_function(flap_id)[-1])), int(target_angle_deg)+1, 5):
                 key_goal, normal_goal, axis_goal, extended_goal, _ = self.oracle_function(
@@ -745,3 +910,37 @@ class PandaGripperPlanner(KukaOmplPlanner):
         self.execute_joint_trajectory_real(retreat_traj)
         # import ipdb; ipdb.set_trace()
         self.box_attached = 4
+
+    def back_home(
+        self,
+        *,
+        planner: Literal['OMPL', 'VAMP'] = "OMPL",
+        timeout: float = 4.0,
+        ik_collision: bool = True,
+        execute: bool = True,
+        vamp_env=None,
+        rebuild_vamp_env: bool = True,
+    ):
+        q_backup = self.get_current_config()
+        self.set_robot_config(self.home_config)
+        link_state = p.getLinkState(self.robot_id, self.ee_link_index, physicsClientId=self.cid)
+        home_pos, home_orn = link_state[0], link_state[1]
+        self.set_robot_config(q_backup)
+        return self.move_to_pose_unified(
+            home_pos,
+            home_orn,
+            planner=planner,
+            timeout=timeout,
+            ik_collision=ik_collision,
+            execute=execute,
+            vamp_env=vamp_env,
+            rebuild_vamp_env=rebuild_vamp_env,
+        )
+
+    # --------- tasks -----------
+    def close_double_flap(self,):
+        print("[Demo] Closing a foldable box with 2 flaps ...")
+        for i in range(3, 1, -1):
+            self.close_flap(i, PL='VAMP')
+            self.back_home()
+            print(f"Flap {i} opened.")

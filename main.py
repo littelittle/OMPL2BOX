@@ -21,16 +21,6 @@ def load_config(path: str | Path):
     with cfg_path.open("r") as f:
         return json.load(f)
 
-def run_unpack(planner):
-    print("[Demo] Unpacking a foldable box with 4 flaps ...")
-    for i in range(3, -1, -1):
-        planner.open_flap_with_ompl(i)
-        # interp_to_grasp = interpolate_joint_line(planner.get_current_config(), planner.home_config, 60)
-        # planner.execute_joint_trajectory_real(interp_to_grasp, 0.1)
-        path = planner.plan(planner.get_current_config(), planner.home_config, timeout=100, num_waypoints=500, optimal=False)
-        traj = omplpath2traj(path)
-        planner.execute_joint_trajectory_real(traj)
-        print(f"Flap {i} opened.")
 
 def run_pick_place(planner: KukaOmplPlanner, cfg: dict):
     print("[Demo] Pick-and-place demo ...")
@@ -106,14 +96,14 @@ def main():
         planner = KukaOmplPlanner(use_gui=gui, box_base_pos=box_base_pos)
 
     if mode == "unpack":
-        run_unpack(planner)
+        planner.close_double_flap()
     else:
         run_pick_place(planner, cfg)
 
     print("Press Ctrl+C to quit the GUI window.")
     while True:
         p.stepSimulation(physicsClientId=planner.cid)
-        time(1.0 / 20.0)
+        time.sleep(1.0 / 20.0)
 
 if __name__ == "__main__":
     main()
