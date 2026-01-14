@@ -73,11 +73,13 @@ class GenericPlanner:
         )
         return [s[0] for s in states]
 
-    def is_state_valid(self, state) -> bool:
+    def is_state_valid(self, state, debug=False) -> bool:
         q = [float(state[i]) for i in range(self.ndof)]
         backup = self.get_current_config()
         for i in range(self.ndof):
             if q[i] < self.lower_limits[i] - 1e-5 or q[i] > self.upper_limits[i] + 1e-5:
+                if debug:
+                    import ipdb; ipdb.set_trace()
                 return False
 
         self.set_robot_config(q)
@@ -94,6 +96,8 @@ class GenericPlanner:
                 physicsClientId=self.cid,
             )
             if len(pts1) > 0:
+                if debug:
+                    import ipdb; ipdb.set_trace()
                 self.set_robot_config(backup)
                 return False
 
@@ -112,14 +116,13 @@ class GenericPlanner:
                         linkIndexB=box_link,
                         physicsClientId=self.cid,
                     )
-                    # print("hh")
                     if len(pts2) > 0:
-                        # import ipdb; ipdb.set_trace()
+                        if debug:
+                            import ipdb; ipdb.set_trace()
                         self.set_robot_config(backup)
                         return False
         self.set_robot_config(backup)
         return True
-
 
     def _set_joint_targets_position_control(self, q_target: List[float]):
         assert len(q_target) == self.ndof
@@ -141,11 +144,12 @@ class GenericPlanner:
         dt: Optional[float] = None,
         segment_duration: Optional[float] = None,
         interpolate: bool = True,
+        N_ref = 100
     ):
         if dt is None:
             dt = self.control_dt
         if segment_duration is None:
-            segment_duration = self.segment_duration
+            segment_duration = self.segment_duration * (N_ref / len(qs))
 
         steps_per_segment = max(1, int(segment_duration / dt))
 

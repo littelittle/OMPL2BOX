@@ -9,9 +9,9 @@ import pybullet as p
 from robot_sim import (
     KukaOmplPlanner,
     PandaGripperPlanner,
-    interpolate_joint_line,
-    omplpath2traj,
     FoldableBox,
+    make_sim,
+    physics_from_config
 )
 
 def load_config(path: str | Path):
@@ -20,7 +20,6 @@ def load_config(path: str | Path):
         raise FileNotFoundError(f"Config file not found: {cfg_path}")
     with cfg_path.open("r") as f:
         return json.load(f)
-
 
 def run_pick_place(planner: KukaOmplPlanner, cfg: dict):
     print("[Demo] Pick-and-place demo ...")
@@ -67,7 +66,7 @@ def main():
     parser.add_argument(
         "--robot",
         choices=["kuka", "panda"],
-        default="kuka",
+        default="panda",
         help="Robot model to use",
     )
     args = parser.parse_args()
@@ -78,12 +77,14 @@ def main():
     robot_name = args.robot or cfg.get("robot", "kuka")
     box_base_pos = cfg.get("foldable_box_pos", [0.7, 0.0, 0.1])
     box_base_orn = cfg.get("foldable_box_orn", p.getQuaternionFromEuler([0, 0, random.uniform(-0.3, 0.3)])) # 
-    cid = p.connect(p.GUI if gui else p.DIRECT)
 
-    pedestal_h = 0.10
+    sim = make_sim(gui=gui, physics=physics_from_config(cfg), load_ground_plane=True)
+    cid = sim.cid
+
+    pedestal_h = 0.20
     pedestal_id = create_pedestal(cid, center_xy=[box_base_pos[0], box_base_pos[1]], height=pedestal_h)
 
-    box_half_h = 0.10  # 你的 box base_half_extents[2] 就是 0.1 :contentReference[oaicite:3]{index=3}
+    box_half_h = 0.07  # 你的 box base_half_extents[2] 就是 0.1 :contentReference[oaicite:3]{index=3}
     box_base_pos = [box_base_pos[0], box_base_pos[1], pedestal_h + box_half_h]
 
     # create the task(box)
@@ -91,14 +92,14 @@ def main():
     box_id = foldable_box.body_id       # for collision detection
 
     if robot_name == "panda":
-        planner = PandaGripperPlanner(oracle_function=foldable_box.get_flap_keypoint_pose, cid=cid, box_id=box_id)
+        planner = PandaGripperPlanner(oracle_function=foldable_box.get_flap_keypoint_pose, cid=cid, box_id=box_id, plane_id=sim.plane_id)
     else:
-        planner = KukaOmplPlanner(use_gui=gui, box_base_pos=box_base_pos)
+        raise NotImplementedError("ONLY SUPPORT PANDA FRANKA NOW")
 
     if mode == "unpack":
         planner.close_double_flap()
     else:
-        run_pick_place(planner, cfg)
+        raise NotImplementedError("ONLY SUPPORT CLOSE DOUBLE FLAP NOW")
 
     print("Press Ctrl+C to quit the GUI window.")
     while True:

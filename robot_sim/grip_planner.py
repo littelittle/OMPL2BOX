@@ -18,6 +18,7 @@ from .foldable_box import FoldableBox
 from .utils.vector import quat_from_normal_and_axis
 from .utils.path import interpolate_joint_line, draw_point, omplpath2traj
 from .utils.pointcloud import pts2obj
+from .utils.contactframe import ContactFrame
 from .generic_planner import GenericPlanner
 from .suck_planner import KukaOmplPlanner
 
@@ -28,13 +29,13 @@ class PandaGripperPlanner(GenericPlanner):
     gripper control so flaps can be pinched before folding.
     """
 
-    def __init__(self, oracle_function=None, cid: Optional[int] = None, box_id: Optional[int] = None):
+    def __init__(self, oracle_function=None, cid: Optional[int] = None, box_id: Optional[int] = None, plane_id: Optional[int] = None):
         self.cid = cid
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
         p.setGravity(0, 0, -9.81, physicsClientId=self.cid)
 
         # Environment: plane + foldable box
-        self.plane_id = p.loadURDF("plane.urdf", physicsClientId=self.cid)
+        self.plane_id = plane_id
         # import ipdb; ipdb.set_trace()
         # self.foldable_box = FoldableBox(base_pos=box_base_pos, cid=self.cid)
         # self.box_id = self.foldable_box.body_id
@@ -142,7 +143,7 @@ class PandaGripperPlanner(GenericPlanner):
                 if j==5: # the wrist joint has weird limits
                     ul = 4.8
                 if j==1: # the second joint is better limited
-                    ll, ul = -2.2, 2.2
+                    ll, ul = -2.3, 2.3
                 if j==6: # the last joint is better limited
                     ll, ul = -3.14, 3.14
                 if ul < ll or (ll == 0 and ul == -1): # for simplicty, ignore limits from URDF
@@ -259,7 +260,7 @@ class PandaGripperPlanner(GenericPlanner):
         filtered_pc = vamp_module.filter_self_from_pointcloud(pts_world.tolist(), vamp.POINT_RADIUS*10, q, env)
 
         build_time = env.add_pointcloud(filtered_pc, r_min, r_max, vamp.POINT_RADIUS*10)
-        pts2obj(filtered_pc, "vamp_env_pointcloud.obj")
+        # pts2obj(filtered_pc, "vamp_env_pointcloud.obj")
 
         return env, build_time
 
@@ -325,6 +326,7 @@ class PandaGripperPlanner(GenericPlanner):
                 exclude_links.append((self.box_id, self.box_attached))
             pts = self.pybullet_depth_to_pointcloud(p, cam_pos=(1.0, 0.0, 0.8), exclude_body_links=exclude_links, exclude_bodies=[self.robot_id])
             env, _build_time = self.build_vamp_env_from_pybullet(pts, q_start)
+            
         
         if not vamp.panda.validate(q_start, env):
             print('[VAMP] start state invalid!')
@@ -700,11 +702,11 @@ class PandaGripperPlanner(GenericPlanner):
             bad = False
 
             # check in range
-            for i in range(self.ndof):
-                if q_candidate[i] < self.lower_limits[i] - 1e-5 or q_candidate[i] > self.upper_limits[i] + 1e-5:
-                    print(f"[IK] joint {i} out of bounds: {q_candidate[i]:.5f} not in [{self.lower_limits[i]:.5f}, {self.upper_limits[i]:.5f}]")
-                    bad = True
-                    break
+            # for i in range(self.ndof):
+            #     if q_candidate[i] < self.lower_limits[i] - 1e-5 or q_candidate[i] > self.upper_limits[i] + 1e-5:
+            #         print(f"[IK] joint {i} out of bounds: {q_candidate[i]:.5f} not in [{self.lower_limits[i]:.5f}, {self.upper_limits[i]:.5f}]")
+            #         bad = True
+            #         break
             if bad:
                 continue
 
@@ -712,6 +714,14 @@ class PandaGripperPlanner(GenericPlanner):
             if not collision or self.is_state_valid(q_candidate) :
                 return q_candidate
         print("[IK] failed to find collision-free IK solution after", max_trials, "trials")
+        while True:
+            p.stepSimulation(physicsClientId=self.cid)
+            time.sleep(1.0 / 240.0)
+            keys = p.getKeyboardEvents(physicsClientId=self.cid)
+            # 'c' 被按下（KEY_WAS_TRIGGERED）
+            print(keys)
+            if ord('c') in keys and (keys[ord('c')] & p.KEY_WAS_TRIGGERED):
+                break
         # import ipdb; ipdb.set_trace()
         return None 
 
@@ -731,9 +741,11 @@ class PandaGripperPlanner(GenericPlanner):
         if q_goal is None:
             return None, vamp_env
 
-        if not self.is_state_valid(q_start):
-            return None, vamp_env
-        if not self.is_state_valid(q_goal) and ik_collision:
+        # if not self.is_state_valid(q_start, debug=True):
+        #     print(f"[ERROR] q_start({q_start}) is invalid!")
+        #     return None, vamp_env
+        if not self.is_state_valid(q_goal, debug=True) and ik_collision:
+            print(f"[ERROR] q_goal({q_goal}) is invalid!")
             return None, vamp_env
 
         if planner == "OMPL":
@@ -747,6 +759,7 @@ class PandaGripperPlanner(GenericPlanner):
                 q_traj.append([float(s[j]) for j in range(self.ndof)])
 
         elif planner == "VAMP":
+            # import ipdb; ipdb.set_trace()
             out = self.plan_vamp(q_start, q_goal, rebuild_env=rebuild_vamp_env, env=vamp_env)
             if out is None:
                 return None, vamp_env
@@ -760,7 +773,316 @@ class PandaGripperPlanner(GenericPlanner):
 
         return q_traj, vamp_env
 
+    # ---------- frame helpers ------
+    def _oracle_frame(self, flap_id: int, *, angle: Optional[float] = None) -> ContactFrame:
+        """
+        统一封装 oracle 输出为 ContactFrame：
+        - 兼容返回 (key, normal, axis, extended) 或 (key, normal, axis, extended, angle)
+        - 兼容 oracle 是否支持 angle=... 关键字
+        """
+        if self.oracle_function is None:
+            raise RuntimeError("oracle_function is None. Please pass FoldableBox.get_flap_keypoint_pose (or your own oracle).")
+
+        # 1) 调 oracle：优先用 angle=...，不支持就降级
+        try:
+            res = self.oracle_function(flap_id, angle=angle) if angle is not None else self.oracle_function(flap_id)
+        except TypeError:
+            # 有些人写 oracle 用位置参数，不支持关键字
+            res = self.oracle_function(flap_id, angle) if angle is not None else self.oracle_function(flap_id)
+
+        if not isinstance(res, (tuple, list)) or len(res) < 4:
+            raise RuntimeError(f"oracle_function returned unexpected value: {res}")
+
+        key, normal, axis, extended = res[:4]
+        # import ipdb; ipdb.set_trace()
+        # 2) angle：优先取 oracle 的第 5 项，否则用输入 angle，否则读 bullet joint
+        ang = None
+        if len(res) >= 5:
+            ang = res[4]
+        if ang is None and angle:
+            ang = float(angle)
+        if ang is None:
+            raise RuntimeError("[ERROR] WHERE IS YOUR ANGLE?")
+
+        return ContactFrame(
+            key=list(map(float, key)),
+            normal=list(map(float, normal)),
+            axis=list(map(float, axis)),
+            extended=list(map(float, extended)),
+            angle=float(ang),
+        )
+
     # ---------- primitives ----------
+    def prim_pregrasp_pinch(
+        self,
+        flap_id: int,
+        *,
+        approach_dist: float,
+        PL: Literal["OMPL", "VAMP"] = "OMPL",
+        timeout: float = 4.0,
+        vamp_env=None,
+        rebuild_vamp_env: bool = True,
+        debug_draw: bool = True,
+    ):
+        """
+        Primitive: 走到“可夹取”的预抓位（沿 extended 方向退 approach_dist）
+        返回: (ok, frame, (pos, orn), vamp_env)
+        """
+        frame = self._oracle_frame(flap_id)
+        pos = [frame.key[i] + frame.extended[i] * float(approach_dist) for i in range(3)]
+        orn = quat_from_normal_and_axis(frame.extended, frame.axis)
+
+        if debug_draw:
+            draw_point(pos, [1, 0, 0], size=0.2, life_time=500)
+
+        traj, vamp_env = self.move_to_pose_unified(
+            pos,
+            orn,
+            planner=PL,
+            timeout=timeout,
+            ik_collision=True,
+            execute=True,
+            vamp_env=vamp_env,
+            rebuild_vamp_env=rebuild_vamp_env,
+        )
+        ok = traj is not None
+        return ok, frame, (pos, orn), vamp_env
+
+    def prim_acquire_pinch(
+        self,
+        flap_id: int,
+        *,
+        approach_dist: float,
+        PL: Literal["OMPL", "VAMP"] = "OMPL",
+        timeout: float = 4.0,
+        close_wait: float = 5.0,
+        min_normal_force: float = 20.0,
+        max_attempts: int = 6,
+        debug_draw: bool = True,
+    ):
+        """
+        Primitive: Acquire（预抓 + 合爪 + grasp 验证）
+        - 内部自带 max_attempts 防止无限 while 卡死
+        返回: (ok, grasp_frame, info_dict)
+        """
+        self.open_gripper()
+        last_info = None
+        grasp_frame = None
+
+        for k in range(int(max_attempts)):
+            ok, frame, _pose, _ = self.prim_pregrasp_pinch(
+                flap_id,
+                approach_dist=approach_dist,
+                PL=PL,
+                timeout=timeout,
+                vamp_env=None,
+                rebuild_vamp_env=True,
+                debug_draw=debug_draw,
+            )
+            if not ok:
+                last_info = {"ok": False, "reason": "pregrasp_failed", "attempt": k}
+                print(last_info)
+                continue
+
+            # 合爪，直到达到一定法向力就提前停（你现在 close_gripper 已支持）
+            self.close_gripper(wait=close_wait, flap_id=flap_id, min_normal_force=min_normal_force)
+            # import ipdb; ipdb.set_trace()
+            g_ok, info = self.check_grasping_flap(
+                flap_id,
+                require_both_fingers=True,
+                min_normal_force=0,
+                debug_draw=debug_draw,
+                return_info=True,
+            )
+            last_info = info
+            grasp_frame = frame
+
+            if g_ok:
+                return True, grasp_frame, info
+
+        return False, grasp_frame, (last_info or {"ok": False, "reason": "unknown"})
+
+    def prim_follow_hinge_open_loop(
+        self,
+        flap_id: int,
+        *,
+        target_angle_deg: float,
+        step_deg: float = 20.0,
+        pull_dist: float = 0.12,
+        PL: Literal["OMPL", "VAMP"] = "VAMP",
+        timeout: float = 4.0,
+        vamp_env=None,
+        rebuild_vamp_env: bool = False,
+        min_normal_force: float = 20.0,
+        reacquire_on_drop: bool = True,
+        reacquire_max: int = 3,
+        approach_dist_for_reacquire: float = 0.12,
+        debug_draw: bool = True,
+    ):
+        """
+        Primitive: 沿铰链“逐步走角度”（每次把 angle 往 |angle| 增大的方向推进 step_deg）
+        - 每步都 move_to_pose_unified(goal_pos, goal_orn)
+        - VAMP 可复用 vamp_env（第一步 rebuild，之后不 rebuild）---不要rebuild!
+        返回: (ok, last_frame, (last_pos, last_orn), vamp_env)
+        """
+        # 复用 env：第一步按参数决定 rebuild，之后都不 rebuild
+        rebuild = bool(rebuild_vamp_env)
+        rebuild = True
+        reacq_count = 0
+
+        last_frame = None
+        last_pose = None
+
+        # 用 bullet 读当前角度更可靠
+        current_angle = self.oracle_function(flap_id)[-1]
+
+        # 防止死循环：最多走这么多步
+        max_steps = int(max(1, abs(float(target_angle_deg)) / max(float(step_deg), 1e-6))) + 100
+
+        for _ in range(max_steps):
+            current_angle = self.oracle_function(flap_id)[-1]
+            current_deg = math.degrees(current_angle)
+            print(f"[DEG]: {current_deg}")
+
+            if abs(current_deg) >= float(target_angle_deg) - 1e-3:
+                return True, last_frame, last_pose, vamp_env
+
+            # 1) 夹持检查
+            start_time = time.time()
+            g_ok, _info = self.check_grasping_flap(
+                flap_id,
+                require_both_fingers=True,
+                # min_normal_force=min_normal_force,
+                debug_draw=debug_draw,
+                return_info=True,
+            )
+            if not g_ok:
+                if not reacquire_on_drop or reacq_count >= int(reacquire_max):
+                    return False, last_frame, last_pose, vamp_env
+
+                # 掉了就重新 acquire
+                self.box_attached = 4
+                ok, _gf, _gi = self.prim_acquire_pinch(
+                    flap_id,
+                    approach_dist=approach_dist_for_reacquire,
+                    PL=PL,
+                    timeout=timeout,
+                    close_wait=5.0,
+                    min_normal_force=min_normal_force,
+                    max_attempts=4,
+                    debug_draw=debug_draw,
+                )
+                # if not ok:
+                #     return False, last_frame, last_pose, vamp_env
+
+                self.box_attached = flap_id
+                reacq_count += 1
+                rebuild = True  # 重新抓取后建议 rebuild 一次 env
+                continue
+
+            # 2) 推进下一步角度：往 |angle| 增大方向走
+            sign = -1.0 # if current_angle <= 0.0 else 1.0
+            next_angle = float(current_angle) + sign * math.radians(float(step_deg))
+
+            frame = self._oracle_frame(flap_id, angle=next_angle)
+
+            goal_pos = [frame.key[i] + frame.extended[i] * float(pull_dist) for i in range(3)]
+            goal_orn = quat_from_normal_and_axis(frame.extended, frame.axis)
+
+            if debug_draw:
+                draw_point(goal_pos, [1, 1, 0], size=0.12, life_time=200)
+            checked_time = time.time()
+            traj, vamp_env = self.move_to_pose_unified(
+                goal_pos,
+                goal_orn,
+                planner=PL,
+                timeout=timeout,
+                ik_collision=True,
+                execute=True,
+                vamp_env=vamp_env,
+                rebuild_vamp_env=rebuild,
+            )
+            if traj is None:
+                return False, frame, (goal_pos, goal_orn), vamp_env
+
+            last_frame = frame
+            last_pose = (goal_pos, goal_orn)
+            # rebuild = False  # 后续复用 env
+
+        return False, last_frame, last_pose, vamp_env    
+
+    def prim_retreat_linear_ik(
+        self,
+        pos,
+        orn,
+        *,
+        direction: List[float],
+        distance: float,
+        steps: int = 45,
+        collision: bool = True,
+        segment_duration: float = 0.05,
+    ):
+        """
+        Primitive: 用 IK + 关节直线插值撤退（你原来 Phase2/Phase3 后的 retreat 就是这个）
+        返回: (ok, (retreat_pos, retreat_orn))
+        """
+        retreat_pos = [pos[i] + float(direction[i]) * float(distance) for i in range(3)]
+        q_goal = self.solve_ik_collision_aware(retreat_pos, orn, collision=collision)
+        if q_goal is None:
+            return False, (retreat_pos, orn)
+
+        q_start = self.get_current_config()
+        traj = interpolate_joint_line(q_start, q_goal, int(steps))
+        self.execute_joint_trajectory_real(traj, segment_duration=segment_duration)
+        return True, (retreat_pos, orn)
+
+    def prim_press_stab_sequence(
+        self,
+        flap_id: int,
+        *,
+        start_deg: int,
+        end_deg: int = 180,
+        step_deg: int = 5,
+        press_dist: float = 0.12,
+        interp_steps: int = 90,
+        segment_duration: float = 0.05,
+        debug_draw: bool = True,
+    ):
+        """
+        Primitive: “stabbing/press”序列（你原 Phase3）
+        - 每个角度：算 key/normal/axis -> 生成一个从外侧 press 的 pose
+        - 用 IK + 关节直线插值执行（不走全局 planner）
+        返回: (last_frame, (last_pos, last_orn))
+        """
+        last_frame = None
+        last_pose = None
+
+        for deg in range(int(start_deg), int(end_deg), int(step_deg)):
+            frame = self._oracle_frame(flap_id, angle=-math.radians(float(deg)))
+
+            # 从外侧沿 normal “顶进去”：pos = key - normal * press_dist
+            goal_pos = [frame.key[i] - frame.normal[i] * float(press_dist) for i in range(3)]
+            goal_orn = quat_from_normal_and_axis([-x for x in frame.normal], frame.axis)
+
+            if debug_draw:
+                draw_point(frame.key, [0, 1, 0], size=0.2, life_time=120)
+
+            q_goal = self.solve_ik_collision_aware(goal_pos, goal_orn, collision=False)
+            if q_goal is None:
+                continue
+
+            q_start = self.get_current_config()
+            traj = interpolate_joint_line(q_start, q_goal, int(interp_steps))
+            self.execute_joint_trajectory_real(traj, segment_duration=segment_duration)
+
+            # 这里你原来是 close_gripper(wait=0.0) 当作“施压/就位动作”
+            self.close_gripper(wait=0.0, flap_id=flap_id)
+
+            last_frame = frame
+            last_pose = (goal_pos, goal_orn)
+
+        return last_frame, last_pose
+
     def reach_flap(
         self,
         flap_id: int,
@@ -911,6 +1233,124 @@ class PandaGripperPlanner(GenericPlanner):
         # import ipdb; ipdb.set_trace()
         self.box_attached = 4
 
+    def close_flap(
+        self,
+        flap_id: int,
+        target_angle_deg: float = 100.0,
+        approach_dist: float = 0.12,
+        timeout: float = 4.0,
+        motion_planning: bool = True,
+        PL: Literal["OMPL", "VAMP"] = "VAMP",
+    ):
+        """
+        close_flap = orchestration (Level-2)
+        依赖的 Level-1 primitives:
+          - prim_acquire_pinch
+          - prim_follow_hinge_open_loop
+          - prim_retreat_linear_ik
+          - prim_press_stab_sequence
+        """
+
+        # -------------------------
+        # Phase 1: acquire pinch
+        # -------------------------
+        self.box_attached = 4  # 抓取前：所有 flap 都算碰撞
+        ok, grasp_frame, grasp_info = self.prim_acquire_pinch(
+            flap_id,
+            approach_dist=approach_dist,
+            PL=PL,
+            timeout=timeout,
+            close_wait=5.0,
+            min_normal_force=20.0,
+            max_attempts=8,
+            debug_draw=True,
+        )
+        if not ok:
+            print(f"[Flap] acquire_pinch failed on flap {flap_id}. info={grasp_info}")
+            return False
+
+        # -------------------------
+        # Phase 2: follow hinge (planning)
+        # -------------------------
+        self.box_attached = flap_id  # 抓住后：忽略该 flap 的碰撞 + VAMP 点云里可排除该 link
+
+        vamp_env = None
+        if motion_planning:
+            ok, last_frame, last_pose, vamp_env = self.prim_follow_hinge_open_loop(
+                flap_id,
+                target_angle_deg=target_angle_deg,
+                step_deg=25.0,
+                pull_dist=0.12,
+                PL=PL,
+                timeout=timeout,
+                vamp_env=vamp_env,
+                rebuild_vamp_env=True,
+                min_normal_force=20.0,
+                reacquire_on_drop=True,
+                reacquire_max=3,
+                approach_dist_for_reacquire=approach_dist,
+                debug_draw=True,
+            )
+            if not ok:
+                print(f"[Flap] follow_hinge failed on flap {flap_id}.")
+                return False
+        else:
+            print("[Flap] motion_planning=False not implemented in refactor (use motion_planning=True).")
+            return False
+
+        # -------------------------
+        # Phase 2.5: release + retreat a bit
+        # -------------------------
+        self.open_gripper()
+        # import ipdb; ipdb.set_trace()
+        # if last_frame is not None and last_pose is not None:
+        #     last_pos, last_orn = last_pose
+        #     # 沿 extended 方向退一点（你原逻辑：approach_dist*0.7）
+        #     self.prim_retreat_linear_ik(
+        #         last_pos,
+        #         last_orn,
+        #         direction=last_frame.extended,
+        #         distance=approach_dist * 0.7,
+        #         steps=10,
+        #         collision=True,
+        #         segment_duration=0.05,
+        #     )
+        # else:
+        #     raise RuntimeWarning("last_frame or last_pose is None!")
+
+        # -------------------------
+        # Phase 3: press/stab to "seat" / fully close
+        # -------------------------
+        current_deg = abs(math.degrees(self.oracle_function(flap_id)[-1]))
+        start_deg = int(current_deg)
+
+        last_frame2, last_pose2 = self.prim_press_stab_sequence(
+            flap_id,
+            start_deg=start_deg,
+            end_deg=180,
+            step_deg=5,
+            press_dist=0.12,
+            interp_steps=10,
+            segment_duration=0.05,
+            debug_draw=True,
+        )
+
+        # if last_frame2 is not None and last_pose2 is not None:
+        #     last_pos, last_orn = last_pose
+        #     # 沿 extended 方向退一点（你原逻辑：approach_dist*0.7）
+        #     self.prim_retreat_linear_ik(
+        #         last_pos,
+        #         last_orn,
+        #         direction=last_frame.extended,
+        #         distance=approach_dist * 0.7,
+        #         steps=10,
+        #         collision=True,
+        #         segment_duration=0.05,
+        #     )
+
+        self.box_attached = 4
+        return True
+
     def back_home(
         self,
         *,
@@ -942,5 +1382,4 @@ class PandaGripperPlanner(GenericPlanner):
         print("[Demo] Closing a foldable box with 2 flaps ...")
         for i in range(3, 1, -1):
             self.close_flap(i, PL='VAMP')
-            self.back_home()
             print(f"Flap {i} opened.")
