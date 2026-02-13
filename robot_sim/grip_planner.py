@@ -15,7 +15,7 @@ from vamp import pybullet_interface as vpb
 import numpy as np
 
 from .foldable_box import FoldableBox
-from .utils.vector import quat_from_normal_and_axis
+from .utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross
 from .utils.path import interpolate_joint_line, draw_point, omplpath2traj
 from .utils.pointcloud import pts2obj
 from .utils.contactframe import ContactFrame
@@ -66,6 +66,7 @@ class PandaGripperPlanner(GenericPlanner):
         self.gripper_close_width: float = 0.0
         self.left_finger_link_index: Optional[int] = None
         self.right_finger_link_index: Optional[int] = None
+        self.tip2body=[0.1, 0.0, 0.0]
 
         self._extract_active_joints()
 
@@ -139,7 +140,7 @@ class PandaGripperPlanner(GenericPlanner):
                 self.joint_indices.append(j)
                 ll = ji[8]
                 ul = ji[9]
-                # some hand adjustments
+                # some manual adjustments
                 if j==5: # the wrist joint has weird limits
                     ul = 4.8
                 if j==1: # the second joint is better limited
@@ -156,7 +157,9 @@ class PandaGripperPlanner(GenericPlanner):
             elif is_finger:
                 self.collision_link_indices.append(j)
 
-            if link_name == "panda_hand":
+            if link_name == "panda_grasptarget":
+                print("panda_grasptarget_hand found!")
+                # import ipdb; ipdb.set_trace()
                 self.ee_link_index = j
 
         # Fallback: if we didn't find explicit left/right labels, just take the first two finger joints.
@@ -324,7 +327,7 @@ class PandaGripperPlanner(GenericPlanner):
             exclude_links = []
             if self.box_id is not None and isinstance(self.box_attached, int) and (0 <= self.box_attached < 4):
                 exclude_links.append((self.box_id, self.box_attached))
-            pts = self.pybullet_depth_to_pointcloud(p, cam_pos=(1.0, 0.0, 0.8), exclude_body_links=exclude_links, exclude_bodies=[self.robot_id])
+            pts = self.pybullet_depth_to_pointcloud(p, cam_pos=(0.8, -0.8, 0.8), exclude_body_links=exclude_links, exclude_bodies=[self.robot_id])
             env, _build_time = self.build_vamp_env_from_pybullet(pts, q_start)
             
         
@@ -404,7 +407,7 @@ class PandaGripperPlanner(GenericPlanner):
             )
         self.command_gripper_width(self.gripper_open_width)
 
-    def close_gripper(self, force: float = 100.0, wait: float = 1.0, flap_id=None, min_normal_force=20.0): 
+    def close_gripper(self, force: float = 100.0, wait: float = 10.0, flap_id=None, min_normal_force=20.0): 
         # TODO: figure out how the coefficient of friction affect the behaviour of the contact
         # p.changeDynamics(self.robot_id, self.gripper_joint_indices[0],  lateralFriction=1.0, spinningFriction=0.05, rollingFriction=0.05)
         # p.changeDynamics(self.robot_id, self.gripper_joint_indices[1], lateralFriction=2.0, spinningFriction=0.05, rollingFriction=0.05)
@@ -436,8 +439,37 @@ class PandaGripperPlanner(GenericPlanner):
                 )
                 if ok:
                     print(f"[DEBUG] THE TARGET FORCE {min_normal_force}N HAS BEEN REACHED EARLY STOPPING IN CLOSING LOOP")
-                    # import ipdb; ipdb.set_trace()
+                    import ipdb; ipdb.set_trace()
                     break
+        ok = self.check_grasping_flap(
+            flap_id,
+            require_both_fingers=True,
+            min_normal_force=0,
+            return_info=True,
+        )
+        # import ipdb; ipdb.set_trace()
+        print(ok)
+
+    def close_gripper_to_width(self, target_width: float, force: float = 100.0, wait: float = 10.0):
+        for j in self.gripper_joint_indices:
+            p.setJointMotorControl2(
+                bodyUniqueId=self.robot_id,
+                jointIndex=j,
+                controlMode=p.VELOCITY_CONTROL,
+                targetVelocity=-abs(0.02), 
+                velocityGain=1.0,
+                force=force,
+                physicsClientId=self.cid,
+            )
+        steps = int(wait / self.control_dt) if hasattr(self, "control_dt") else 60
+        target = max(0.0, min(self.gripper_open_width, target_width)) * 0.5
+        for _ in range(steps):
+            p.stepSimulation(physicsClientId=self.cid)
+            # time.sleep(self.control_dt)
+            js = p.getJointStates(self.robot_id, self.gripper_joint_indices, physicsClientId=self.cid)
+            jpos = js[0][0]
+            if jpos <= target + 0.001:
+                break
 
     # ---------- grasp checking ----------
     def check_grasping_flap(
@@ -669,7 +701,7 @@ class PandaGripperPlanner(GenericPlanner):
 
         return qn
 
-    def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=2000):
+    def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=20):
         import random
         base_rest = self.rest_pose[:]
 
@@ -702,11 +734,11 @@ class PandaGripperPlanner(GenericPlanner):
             bad = False
 
             # check in range
-            # for i in range(self.ndof):
-            #     if q_candidate[i] < self.lower_limits[i] - 1e-5 or q_candidate[i] > self.upper_limits[i] + 1e-5:
-            #         print(f"[IK] joint {i} out of bounds: {q_candidate[i]:.5f} not in [{self.lower_limits[i]:.5f}, {self.upper_limits[i]:.5f}]")
-            #         bad = True
-            #         break
+            for i in range(self.ndof):
+                if q_candidate[i] < self.lower_limits[i] - 1e-5 or q_candidate[i] > self.upper_limits[i] + 1e-5:
+                    print(f"[IK] joint {i} out of bounds: {q_candidate[i]:.5f} not in [{self.lower_limits[i]:.5f}, {self.upper_limits[i]:.5f}]")
+                    bad = True
+                    break
             if bad:
                 continue
 
@@ -714,14 +746,14 @@ class PandaGripperPlanner(GenericPlanner):
             if not collision or self.is_state_valid(q_candidate) :
                 return q_candidate
         print("[IK] failed to find collision-free IK solution after", max_trials, "trials")
-        while True:
-            p.stepSimulation(physicsClientId=self.cid)
-            time.sleep(1.0 / 240.0)
-            keys = p.getKeyboardEvents(physicsClientId=self.cid)
-            # 'c' 被按下（KEY_WAS_TRIGGERED）
-            print(keys)
-            if ord('c') in keys and (keys[ord('c')] & p.KEY_WAS_TRIGGERED):
-                break
+        # while True:
+        #     p.stepSimulation(physicsClientId=self.cid)
+        #     time.sleep(1.0 / 240.0)
+        #     keys = p.getKeyboardEvents(physicsClientId=self.cid)
+        #     # 'c' 被按下（KEY_WAS_TRIGGERED）
+        #     print(keys)
+        #     if ord('c') in keys and (keys[ord('c')] & p.KEY_WAS_TRIGGERED):
+        #         break
         # import ipdb; ipdb.set_trace()
         return None 
 
@@ -773,6 +805,91 @@ class PandaGripperPlanner(GenericPlanner):
 
         return q_traj, vamp_env
 
+    def _quat_from_normal_and_yaw(
+        self,
+        normal_world,
+        yaw: float,
+        finger_axis_is_plus_y: bool = True,  # True: +Y 对齐 normal；False: -Y 对齐 normal
+    ):
+        n = _normalize(normal_world)
+
+        # 让 EE 的 y 轴对齐 normal（或反向）
+        y = [n[0], n[1], n[2]] if finger_axis_is_plus_y else [-n[0], -n[1], -n[2]]
+
+        # 选一个不与 y 平行的参考向量，构造正交基
+        tmp = [1.0, 0.0, 0.0] if abs(y[0]) < 0.9 else [0.0, 0.0, 1.0]
+        x0 = _normalize(_cross(tmp, y))
+        z0 = _normalize(_cross(x0, y))  # 保证右手系：x × y = z
+
+        # 绕 y（也就是 normal）旋转 yaw：在 x-z 平面里转
+        c, s = math.cos(yaw), math.sin(yaw)
+        x = [x0[i] * c + z0[i] * s for i in range(3)]
+        z = [-x0[i] * s + z0[i] * c for i in range(3)]
+
+        # 列向量 [x, y, z]
+        R = [
+            [x[0], y[0], z[0]],
+            [x[1], y[1], z[1]],
+            [x[2], y[2], z[2]],
+        ]
+        return _mat_to_quat(R)
+
+    def move_to_pose_with_free_yaw(
+        self,
+        pos,
+        normal_world,
+        yaw: float=None,
+        *,
+        yaw_samples: int = 10,
+        approach_flip: bool = True,   # True: tool -Z 对齐 normal（和你 quat_from_normal_and_axis 默认一致 :contentReference[oaicite:2]{index=2}）
+        planner: str = "OMPL",
+        timeout: float = 4.0,
+        ik_collision: bool = True,
+        execute: bool = True,
+        vamp_env=None,
+        rebuild_vamp_env: bool = True,
+    ):
+        """
+        给 pos + normal_world，扫描多个 yaw，找到一个可行的 orn，再调用 move_to_pose_unified。
+        返回: (traj, chosen_orn, vamp_env)；若失败，traj=None。
+        """
+        # 先随机打乱 yaw 顺序（更容易避开奇怪奇异位形）
+        yaws = [2.0 * math.pi * k / float(max(1, yaw_samples)) for k in range(max(1, yaw_samples))]
+        if yaw is not None:
+            yaws = [yaw] + yaws
+        # 也可以不 random；这里保持 deterministic 也行
+        # import random; random.shuffle(yaws)
+
+        for yaw in yaws:
+            orn = self._quat_from_normal_and_yaw(normal_world, yaw, finger_axis_is_plus_y=approach_flip)
+
+            # 先试 IK（省得每次都跑规划）
+            q_goal = self.solve_ik_collision_aware(pos, orn, collision=ik_collision)
+            if q_goal is None:
+                continue
+            if ik_collision and (not self.is_state_valid(q_goal)):
+                continue
+
+            # Only for selected configuration(yaw) debugging
+            # current_q = self.get_current_config()
+            # self.set_robot_config(q_goal)
+            # input()
+            # self.set_robot_config(current_q)
+            
+            # 再走统一规划执行
+            traj, vamp_env = self.move_to_pose_unified(
+                pos, orn,
+                planner=planner,
+                timeout=timeout,
+                ik_collision=ik_collision,
+                execute=execute,
+                vamp_env=vamp_env,
+                rebuild_vamp_env=rebuild_vamp_env,
+            )
+            if traj is not None:
+                return traj, orn, vamp_env, yaw
+
+        return None, None, vamp_env, yaw
     # ---------- frame helpers ------
     def _oracle_frame(self, flap_id: int, *, angle: Optional[float] = None) -> ContactFrame:
         """

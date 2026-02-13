@@ -101,12 +101,13 @@ class GenericPlanner:
                 self.set_robot_config(backup)
                 return False
 
+        # import ipdb; ipdb.set_trace()
         if not self.box_attached==-2:
             for link_index in check_list:
                 # import ipdb; ipdb.set_trace()
                 for box_link in range(-1, 4):
                     if box_link == self.box_attached:
-                        # print("skipping collision check for attached flap ", box_link)
+                        print("skipping collision check for attached flap ", box_link)
                         continue
                     pts2 = p.getClosestPoints(
                         bodyA=self.robot_id,
@@ -173,7 +174,7 @@ class GenericPlanner:
 
                 self._set_joint_targets_position_control(q_cmd)
                 p.stepSimulation(physicsClientId=self.cid)
-                time.sleep(dt)
+                # time.sleep(dt)
 
             q_curr = list(q_next)
 
