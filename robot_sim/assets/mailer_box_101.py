@@ -47,7 +47,7 @@ class MailerBox:
         """
         self.scaling = 1.0
         pos = self.pos.copy()
-        pos[2] += 0.3
+        # pos[2] += 0.3
         self.body_id = p.loadURDF(
             fileName=self.file_path,
             useFixedBase=True,
@@ -101,6 +101,7 @@ class MailerBox:
         key_world, _ = p.multiplyTransforms(flap_pos_w, flap_orn_w, key_local, [0.0, 0.0, 0.0, 1.0], physicsClientId=self.cid)
         key_world = list(key_world)
         draw_point(key_world, size=0.1)
+        # import ipdb; ipdb.set_trace()
         normal_local = [0.0, -1.0, 0.0]
         normal_world = p.multiplyTransforms([0.0, 0.0, 0.0], flap_orn_w, normal_local, [0.0, 0.0, 0.0, 1.0],  physicsClientId=self.cid)[0]
         normal_world = _normalize(list(normal_world))

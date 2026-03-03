@@ -10,7 +10,7 @@ from ompl import base as ob
 from ompl import geometric as og
 
 import vamp
-from vamp import pybullet_interface as vpb
+# from vamp import pybullet_interface as vpb
 
 import numpy as np
 
@@ -142,7 +142,7 @@ class PandaGripperPlanner(GenericPlanner):
                 ul = ji[9]
                 # some manual adjustments
                 if j==5: # the wrist joint has weird limits
-                    ul = 4.8
+                    ul = 4.4 # 4.8
                 if j==1: # the second joint is better limited
                     ll, ul = -2.3, 2.3
                 if j==6: # the last joint is better limited
@@ -451,6 +451,7 @@ class PandaGripperPlanner(GenericPlanner):
         print(ok)
 
     def close_gripper_to_width(self, target_width: float, force: float = 100.0, wait: float = 10.0):
+        # import ipdb; ipdb.set_trace()
         for j in self.gripper_joint_indices:
             p.setJointMotorControl2(
                 bodyUniqueId=self.robot_id,
@@ -801,7 +802,9 @@ class PandaGripperPlanner(GenericPlanner):
             raise ValueError(f"unknown planner: {planner}")
 
         if execute:
-            self.execute_joint_trajectory_real(q_traj)
+            self.execute_joint_trajectory_real(q_traj, dt=0.2, interpolate=False)
+        else:
+            self.execute_joint_trajectory(q_traj, dt=0.2)
 
         return q_traj, vamp_env
 
@@ -841,7 +844,7 @@ class PandaGripperPlanner(GenericPlanner):
         yaw: float=None,
         *,
         yaw_samples: int = 10,
-        approach_flip: bool = True,   # True: tool -Z 对齐 normal（和你 quat_from_normal_and_axis 默认一致 :contentReference[oaicite:2]{index=2}）
+        approach_flip: bool = False,   # True: tool -Z 对齐 normal
         planner: str = "OMPL",
         timeout: float = 4.0,
         ik_collision: bool = True,
@@ -853,22 +856,23 @@ class PandaGripperPlanner(GenericPlanner):
         给 pos + normal_world，扫描多个 yaw，找到一个可行的 orn，再调用 move_to_pose_unified。
         返回: (traj, chosen_orn, vamp_env)；若失败，traj=None。
         """
-        # 先随机打乱 yaw 顺序（更容易避开奇怪奇异位形）
         yaws = [2.0 * math.pi * k / float(max(1, yaw_samples)) for k in range(max(1, yaw_samples))]
+        
+        # yaw provided, try it first, then fall back to sampling
         if yaw is not None:
             yaws = [yaw] + yaws
-        # 也可以不 random；这里保持 deterministic 也行
-        # import random; random.shuffle(yaws)
 
-        for yaw in yaws:
+        for i, yaw in enumerate(yaws):
             orn = self._quat_from_normal_and_yaw(normal_world, yaw, finger_axis_is_plus_y=approach_flip)
 
-            # 先试 IK（省得每次都跑规划）
+            # Select an end-effector pose that is reachable within the configuration space and collision-free.
             q_goal = self.solve_ik_collision_aware(pos, orn, collision=ik_collision)
             if q_goal is None:
                 continue
-            if ik_collision and (not self.is_state_valid(q_goal)):
+            elif ik_collision and (not self.is_state_valid(q_goal)):
                 continue
+            else:
+                print(f"[IK] IK solution found for the {i}th candidate!")
 
             # Only for selected configuration(yaw) debugging
             # current_q = self.get_current_config()
@@ -876,7 +880,7 @@ class PandaGripperPlanner(GenericPlanner):
             # input()
             # self.set_robot_config(current_q)
             
-            # 再走统一规划执行
+            # Execute
             traj, vamp_env = self.move_to_pose_unified(
                 pos, orn,
                 planner=planner,
@@ -890,6 +894,7 @@ class PandaGripperPlanner(GenericPlanner):
                 return traj, orn, vamp_env, yaw
 
         return None, None, vamp_env, yaw
+    
     # ---------- frame helpers ------
     def _oracle_frame(self, flap_id: int, *, angle: Optional[float] = None) -> ContactFrame:
         """

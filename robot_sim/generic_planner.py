@@ -174,9 +174,15 @@ class GenericPlanner:
 
                 self._set_joint_targets_position_control(q_cmd)
                 p.stepSimulation(physicsClientId=self.cid)
-                # time.sleep(dt)
+                time.sleep(dt)
 
             q_curr = list(q_next)
+
+    def execute_joint_trajectory(self, qs: List[List[float]], dt: float = 1.0 / 240.0):
+        for q in qs:
+            self.set_robot_config(q)
+            p.stepSimulation(physicsClientId=self.cid)
+            time.sleep(dt)
 
     def wrap_into_limits(self, q: List[float], q_ref: Optional[List[float]] = None) -> List[float]:
         qn = list(q)
