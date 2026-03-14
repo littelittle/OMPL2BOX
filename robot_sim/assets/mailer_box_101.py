@@ -8,7 +8,7 @@ from robot_sim.sim_context import make_sim
 from robot_sim.utils.vector import _normalize
 
 class MailerBox:
-    def __init__(self, cid, file_path, scaling=1.0, pos=[0.0, 0.0, 0.0]):
+    def __init__(self, cid, file_path, scaling=1.0, pos=[0.0, 0.0, 0.0], closed=False):
         self.cid = cid
         self.body_id = None
         self.lid_id = None
@@ -20,8 +20,13 @@ class MailerBox:
         self._load_urdf()
 
         # reset C-space
-        lid_rad  = np.deg2rad(-90)
-        flap_rad = np.deg2rad(-90)
+        # set two status: closed or open
+        if closed:
+            lid_rad = np.deg2rad(90)
+            flap_rad = np.deg2rad(90)
+        else:
+            lid_rad  = np.deg2rad(-90)
+            flap_rad = np.deg2rad(-90)
 
         p.resetJointState(
             bodyUniqueId=self.body_id,
@@ -45,7 +50,7 @@ class MailerBox:
         FOR CJT file_path="robot_sim/assets/103/fixed.urdf"
         FOR ZHW file_path="robot_sim/assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf"
         """
-        self.scaling = 1.0
+        # self.scaling = 1.0
         pos = self.pos.copy()
         # pos[2] += 0.3
         self.body_id = p.loadURDF(
@@ -97,7 +102,7 @@ class MailerBox:
 
         ls = p.getLinkState(self.body_id, self.flap_id, computeForwardKinematics=True, physicsClientId=self.cid)
         flap_pos_w, flap_orn_w = ls[4], ls[5]
-        key_local = [0.13, 0.0, 0.05]
+        key_local = [i * self.scaling for i in [0.13, 0.0, 0.05]] 
         key_world, _ = p.multiplyTransforms(flap_pos_w, flap_orn_w, key_local, [0.0, 0.0, 0.0, 1.0], physicsClientId=self.cid)
         key_world = list(key_world)
         draw_point(key_world, size=0.1)

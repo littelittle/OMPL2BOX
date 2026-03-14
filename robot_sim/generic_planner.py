@@ -128,6 +128,9 @@ class GenericPlanner:
     def _set_joint_targets_position_control(self, q_target: List[float]):
         assert len(q_target) == self.ndof
         for i, joint_index in enumerate(self.joint_indices):
+            if i in self.gripper_joint_indices:
+                print("hhhh")
+                continue
             p.setJointMotorControl2(
                 bodyUniqueId=self.robot_id,
                 jointIndex=joint_index,
@@ -161,7 +164,6 @@ class GenericPlanner:
 
         for q_next in qs:
             assert len(q_next) == self.ndof
-
             for k in range(steps_per_segment):
                 if interpolate:
                     alpha = float(k + 1) / float(steps_per_segment)

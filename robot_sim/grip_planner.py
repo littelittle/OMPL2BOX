@@ -1,6 +1,7 @@
 import sys
 import math
 import time
+import random
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Literal
 
@@ -141,10 +142,10 @@ class PandaGripperPlanner(GenericPlanner):
                 ll = ji[8]
                 ul = ji[9]
                 # some manual adjustments
-                if j==5: # the wrist joint has weird limits
-                    ul = 4.4 # 4.8
-                if j==1: # the second joint is better limited
-                    ll, ul = -2.3, 2.3
+                # if j==5: # the wrist joint has weird limits
+                #     ul = 4.4 # 4.8
+                # if j==1: # the second joint is better limited
+                #     ll, ul = -2.3, 2.3
                 if j==6: # the last joint is better limited
                     ll, ul = -3.14, 3.14
                 if ul < ll or (ll == 0 and ul == -1): # for simplicty, ignore limits from URDF
@@ -702,9 +703,11 @@ class PandaGripperPlanner(GenericPlanner):
 
         return qn
 
-    def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=20):
-        import random
-        base_rest = self.rest_pose[:]
+    def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=20, reset=True, q_reset=None):
+        base_rest = q_reset if q_reset else self.rest_pose[:] 
+        if reset:
+            q_backup = self.get_current_config()
+            self.set_robot_config(base_rest)
 
         for t in range(max_trials):
             if t == 1:
@@ -745,17 +748,12 @@ class PandaGripperPlanner(GenericPlanner):
 
             # import ipdb; ipdb.set_trace()
             if not collision or self.is_state_valid(q_candidate) :
+                if reset:
+                    self.set_robot_config(q_backup)
                 return q_candidate
         print("[IK] failed to find collision-free IK solution after", max_trials, "trials")
-        # while True:
-        #     p.stepSimulation(physicsClientId=self.cid)
-        #     time.sleep(1.0 / 240.0)
-        #     keys = p.getKeyboardEvents(physicsClientId=self.cid)
-        #     # 'c' 被按下（KEY_WAS_TRIGGERED）
-        #     print(keys)
-        #     if ord('c') in keys and (keys[ord('c')] & p.KEY_WAS_TRIGGERED):
-        #         break
-        # import ipdb; ipdb.set_trace()
+        if reset:
+            self.set_robot_config(q_backup)
         return None 
 
     def move_to_pose_unified(
@@ -777,7 +775,7 @@ class PandaGripperPlanner(GenericPlanner):
         # if not self.is_state_valid(q_start, debug=True):
         #     print(f"[ERROR] q_start({q_start}) is invalid!")
         #     return None, vamp_env
-        if not self.is_state_valid(q_goal, debug=True) and ik_collision:
+        if ik_collision and not self.is_state_valid(q_goal, debug=True):
             print(f"[ERROR] q_goal({q_goal}) is invalid!")
             return None, vamp_env
 
@@ -802,9 +800,9 @@ class PandaGripperPlanner(GenericPlanner):
             raise ValueError(f"unknown planner: {planner}")
 
         if execute:
-            self.execute_joint_trajectory_real(q_traj, dt=0.2, interpolate=False)
+            self.execute_joint_trajectory_real(q_traj, dt=0.05, interpolate=False)
         else:
-            self.execute_joint_trajectory(q_traj, dt=0.2)
+            self.execute_joint_trajectory(q_traj, dt=0.05)
 
         return q_traj, vamp_env
 
@@ -856,7 +854,10 @@ class PandaGripperPlanner(GenericPlanner):
         给 pos + normal_world，扫描多个 yaw，找到一个可行的 orn，再调用 move_to_pose_unified。
         返回: (traj, chosen_orn, vamp_env)；若失败，traj=None。
         """
-        yaws = [2.0 * math.pi * k / float(max(1, yaw_samples)) for k in range(max(1, yaw_samples))]
+        # TODO: sample from a tighter bound instead of [0, 2pi)
+        lower_bound, upper_bound = 2.0 * math.pi * 0.4, 2.0 * math.pi * 0.6
+        yaws = [lower_bound+k*(upper_bound-lower_bound)/float(max(1, yaw_samples)) for k in range(max(1, yaw_samples))]
+        # yaws = [2.0 * math.pi * k / float(max(1, yaw_samples)) for k in range(4, max(1, yaw_samples))]
         
         # yaw provided, try it first, then fall back to sampling
         if yaw is not None:
@@ -873,6 +874,7 @@ class PandaGripperPlanner(GenericPlanner):
                 continue
             else:
                 print(f"[IK] IK solution found for the {i}th candidate!")
+                # import ipdb; ipdb.set_trace()
 
             # Only for selected configuration(yaw) debugging
             # current_q = self.get_current_config()
