@@ -1,10 +1,6 @@
 {
-  "mode": "unpack",
-  "robot": "kuka",
+  "mode": "4-flap box task",
+  "robot": "panda",
   "gui": true,
-  "foldable_box_pos": [0.5, 0.0, 0.1],
-  "pick_place": {
-    "box_pos": [0.5, 0.0, 0.1],
-    "place_pos": [0.5, -0.35, 0.1]
-  }
+  "foldable_box_pos": [0.5, 0.0, 0.1]
 }

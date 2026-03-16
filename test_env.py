@@ -11,13 +11,15 @@ import math
 from functools import partial
 
 from robot_sim import (
-    PandaGripperPlanner,
+    # PandaGripperPlanner,
     make_sim,
     physics_from_config,
     MailerBox,
     create_pedestal,
     interpolate_joint_line,
 )
+
+from planners import PandaGripperPlanner
 
 def ee_axes_in_world(body_id, ee_link, cid):
     ls = p.getLinkState(body_id, ee_link, computeForwardKinematics=True, physicsClientId=cid)

@@ -7,11 +7,16 @@ import random
 import pybullet as p
 
 from robot_sim import (
-    KukaOmplPlanner,
-    PandaGripperPlanner,
+    # KukaOmplPlanner,
+    # PandaGripperPlanner,
     FoldableBox,
     make_sim,
     physics_from_config
+)
+
+from planners import (
+    KukaOmplPlanner,
+    PandaGripperPlanner,
 )
 
 def load_config(path: str | Path):
@@ -20,13 +25,6 @@ def load_config(path: str | Path):
         raise FileNotFoundError(f"Config file not found: {cfg_path}")
     with cfg_path.open("r") as f:
         return json.load(f)
-
-def run_pick_place(planner: KukaOmplPlanner, cfg: dict):
-    print("[Demo] Pick-and-place demo ...")
-    pick_cfg = cfg.get("pick_place", {})
-    box_pos = pick_cfg.get("box_pos", [0.6, 0.0, 0.1])
-    place_pos = pick_cfg.get("place_pos", [0.5, -0.35, 0.1])
-    planner.pick_and_place(box_pos, place_pos)
 
 def create_pedestal(cid, center_xy, size_xy=(0.40, 0.34), height=0.10, rgba=(0.6, 0.6, 0.6, 1.0)):
     """创建一个静态台子（mass=0），顶面高度=height，底面贴地 z=0。"""
@@ -44,7 +42,7 @@ def create_pedestal(cid, center_xy, size_xy=(0.40, 0.34), height=0.10, rgba=(0.6
     return pedestal_id
 
 def main():
-    parser = argparse.ArgumentParser(description="KUKA + foldable box demos")
+    parser = argparse.ArgumentParser(description="Panda + foldable box demos")
     parser.add_argument(
         "--config",
         type=str,
@@ -53,7 +51,7 @@ def main():
     )
     parser.add_argument(
         "--mode",
-        choices=["unpack", "pick-place"],
+        choices=["4-flap box task", "mailer box task"],
         default=None,
         help="Which demo to run (overrides config if set)",
     )
@@ -72,34 +70,40 @@ def main():
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    mode = args.mode or cfg.get("mode", "unpack")
+    mode = args.mode or cfg.get("mode", "4-flap box task")
     gui = cfg.get("gui", True) if args.gui is None else args.gui
-    robot_name = args.robot or cfg.get("robot", "kuka")
-    box_base_pos = cfg.get("foldable_box_pos", [0.7, 0.0, 0.1])
-    box_base_orn = cfg.get("foldable_box_orn", p.getQuaternionFromEuler([0, 0, random.uniform(-0.3, 0.3)])) # 
+    robot_name = args.robot or cfg.get("robot", "panda")
 
-    sim = make_sim(gui=gui, physics=physics_from_config(cfg), load_ground_plane=True)
-    cid = sim.cid
+    if mode == "4-flap box task":
+        # TODO: only expose the main func as an entry point, rearrange the task-specific code into one specific file 
+    
+        box_base_pos = cfg.get("foldable_box_pos", [0.7, 0.0, 0.1])
+        box_base_orn = cfg.get("foldable_box_orn", p.getQuaternionFromEuler([0, 0, random.uniform(-0.3, 0.3)])) 
 
-    pedestal_h = 0.20
-    pedestal_id = create_pedestal(cid, center_xy=[box_base_pos[0], box_base_pos[1]], height=pedestal_h)
+        sim = make_sim(gui=gui, physics=physics_from_config(cfg), load_ground_plane=True)
+        cid = sim.cid
 
-    box_half_h = 0.07  # box base_half_extents[2] 就是 0.1 :contentReference[oaicite:3]{index=3}
-    box_base_pos = [box_base_pos[0], box_base_pos[1], pedestal_h + box_half_h]
+        pedestal_h = cfg.get("pedestal_h", 0.20)
+        pedestal_id = create_pedestal(cid, center_xy=[box_base_pos[0], box_base_pos[1]], height=pedestal_h)
 
-    # create the task(box)
-    foldable_box = FoldableBox(base_pos=box_base_pos, base_orn=box_base_orn, cid=cid)
-    box_id = foldable_box.body_id       # for collision detection
+        box_half_h = 0.07  # box base_half_extents[2] 就是 0.1 :contentReference[oaicite:3]{index=3}
+        box_base_pos = [box_base_pos[0], box_base_pos[1], pedestal_h + box_half_h]
 
-    if robot_name == "panda":
-        planner = PandaGripperPlanner(oracle_function=foldable_box.get_flap_keypoint_pose, cid=cid, box_id=box_id, plane_id=sim.plane_id)
-    else:
-        raise NotImplementedError("ONLY SUPPORT PANDA FRANKA NOW")
+        # create the task(box)
+        foldable_box = FoldableBox(base_pos=box_base_pos, base_orn=box_base_orn, cid=cid)
+        box_id = foldable_box.body_id       # for collision detection
 
-    if mode == "unpack":
+        if robot_name == "panda":
+            planner = PandaGripperPlanner(oracle_function=foldable_box.get_flap_keypoint_pose, cid=cid, box_id=box_id, plane_id=sim.plane_id)
+        else:
+            raise NotImplementedError("ONLY SUPPORT PANDA FRANKA NOW")
         planner.close_double_flap()
+
+    elif mode == "mailer box task":
+        # TODO: merge what's in test_env.py
+        pass
     else:
-        raise NotImplementedError("ONLY SUPPORT CLOSE DOUBLE FLAP NOW")
+        raise NotImplementedError(f"[ERROR] {mode} not supported")
 
     print("Press Ctrl+C to quit the GUI window.")
     while True:
