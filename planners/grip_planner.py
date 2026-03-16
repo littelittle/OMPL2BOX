@@ -15,7 +15,6 @@ import vamp
 
 import numpy as np
 
-from robot_sim.foldable_box import FoldableBox
 from robot_sim.utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross
 from robot_sim.utils.path import interpolate_joint_line, draw_point, omplpath2traj
 from robot_sim.utils.pointcloud import pts2obj

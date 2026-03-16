@@ -9,15 +9,14 @@ import pybullet as p
 from robot_sim import (
     # KukaOmplPlanner,
     # PandaGripperPlanner,
-    FoldableBox,
+    # FoldableBox,
     make_sim,
     physics_from_config
 )
 
-from planners import (
-    KukaOmplPlanner,
-    PandaGripperPlanner,
-)
+from planners import KukaOmplPlanner, PandaGripperPlanner
+from models import FoldableBox
+
 
 def load_config(path: str | Path):
     cfg_path = Path(path)

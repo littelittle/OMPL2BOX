@@ -11,13 +11,13 @@ import math
 from functools import partial
 
 from robot_sim import (
-    # PandaGripperPlanner,
     make_sim,
     physics_from_config,
-    MailerBox,
     create_pedestal,
     interpolate_joint_line,
 )
+
+from models import MailerBox
 
 from planners import PandaGripperPlanner
 

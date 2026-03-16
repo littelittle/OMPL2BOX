@@ -38,7 +38,7 @@ class FoldableBox:
 
     # ----------------------------- model build -----------------------------
     def _asset_path(self) -> str:
-        return str(Path(__file__).resolve().parent / "assets" / "foldable_box_small.urdf")
+        return str(Path(__file__).resolve().parent.parent/ "robot_sim" / "assets" / "foldable_box_small.urdf")
 
     def _load_urdf(self):
         body_id = p.loadURDF(
