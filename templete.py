@@ -10,7 +10,7 @@ import math
 
 from functools import partial
 
-from robot_sim import (
+from scene import (
     PandaGripperPlanner,
     make_sim,
     physics_from_config,

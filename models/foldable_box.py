@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 
 import pybullet as p
 
-from robot_sim.utils.vector import _cross, _dot, _normalize
+from utils.vector import _cross, _dot, _normalize
 
 def _rotate_axis_angle(v, axis, angle: float):
     """Rodrigues 公式，在局部系中绕单位轴 axis 旋转向量 v。"""
@@ -38,7 +38,7 @@ class FoldableBox:
 
     # ----------------------------- model build -----------------------------
     def _asset_path(self) -> str:
-        return str(Path(__file__).resolve().parent.parent/ "robot_sim" / "assets" / "foldable_box_small.urdf")
+        return str(Path(__file__).resolve().parent.parent/ "assets" / "foldable_box_small.urdf")
 
     def _load_urdf(self):
         body_id = p.loadURDF(

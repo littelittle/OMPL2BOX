@@ -15,10 +15,10 @@ import vamp
 
 import numpy as np
 
-from robot_sim.utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross
-from robot_sim.utils.path import interpolate_joint_line, draw_point, omplpath2traj
-from robot_sim.utils.pointcloud import pts2obj
-from robot_sim.utils.contactframe import ContactFrame
+from utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross
+from utils.path import interpolate_joint_line, draw_point, omplpath2traj
+from utils.pointcloud import pts2obj
+from utils.contactframe import ContactFrame
 from .generic_planner import GenericPlanner
 
 class PandaGripperPlanner(GenericPlanner):

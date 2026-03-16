@@ -6,10 +6,7 @@ import random
 
 import pybullet as p
 
-from robot_sim import (
-    # KukaOmplPlanner,
-    # PandaGripperPlanner,
-    # FoldableBox,
+from scene import (
     make_sim,
     physics_from_config
 )

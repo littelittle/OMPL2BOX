@@ -10,13 +10,13 @@ import math
 
 from functools import partial
 
-from robot_sim import (
+from scene import (
     make_sim,
     physics_from_config,
     create_pedestal,
-    interpolate_joint_line,
 )
 
+from utils.path import interpolate_joint_line
 from models import MailerBox
 
 from planners import PandaGripperPlanner
@@ -284,7 +284,7 @@ def main(closed=False):
     # TODO:figure out the graspable region of the mailerbox_pos
     mailerbox_pos = [0.6, 0.1, 0.4]
 
-    mailerbox = MailerBox(cid, file_path="robot_sim/assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf", scaling=1, pos=mailerbox_pos, closed=closed)
+    mailerbox = MailerBox(cid, file_path="assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf", scaling=1, pos=mailerbox_pos, closed=closed)
     box_id = mailerbox.body_id
     # pedestal_id = create_pedestal(cid, center_xy=[mailerbox_pos[0], mailerbox_pos[1]], height=mailerbox_pos[2])
 

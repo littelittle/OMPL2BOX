@@ -10,8 +10,8 @@ import vamp
 import numpy as np
 
 from models import FoldableBox
-from robot_sim.utils.vector import quat_from_normal_and_axis
-from robot_sim.utils.path import interpolate_joint_line, draw_point, omplpath2traj
+from utils.vector import quat_from_normal_and_axis
+from utils.path import interpolate_joint_line, draw_point, omplpath2traj
 # from main_vamp import build_vamp_env_from_pybullet, pybullet_depth_to_pointcloud, execute_position_control
 
 class KukaOmplPlanner:

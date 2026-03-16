@@ -3,9 +3,9 @@ import pybullet_data
 import time
 import numpy as np
 import math
-from robot_sim.utils.path import draw_point
-from robot_sim.sim_context import make_sim
-from robot_sim.utils.vector import _normalize
+from utils.path import draw_point
+from scene.sim_context import make_sim
+from utils.vector import _normalize
 
 class MailerBox:
     def __init__(self, cid, file_path, scaling=1.0, pos=[0.0, 0.0, 0.0], closed=False):
@@ -47,8 +47,8 @@ class MailerBox:
 
     def _load_urdf(self):
         """
-        FOR CJT file_path="robot_sim/assets/103/fixed.urdf"
-        FOR ZHW file_path="robot_sim/assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf"
+        FOR CJT file_path="assets/103/fixed.urdf"
+        FOR ZHW file_path="assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf"
         """
         # self.scaling = 1.0
         pos = self.pos.copy()
