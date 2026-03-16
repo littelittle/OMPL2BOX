@@ -84,7 +84,7 @@ def main():
     pedestal_h = 0.20
     pedestal_id = create_pedestal(cid, center_xy=[box_base_pos[0], box_base_pos[1]], height=pedestal_h)
 
-    box_half_h = 0.07  # 你的 box base_half_extents[2] 就是 0.1 :contentReference[oaicite:3]{index=3}
+    box_half_h = 0.07  # box base_half_extents[2] 就是 0.1 :contentReference[oaicite:3]{index=3}
     box_base_pos = [box_base_pos[0], box_base_pos[1], pedestal_h + box_half_h]
 
     # create the task(box)
