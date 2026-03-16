@@ -1361,7 +1361,7 @@ class PandaGripperPlanner(GenericPlanner):
         self,
         flap_id: int,
         target_angle_deg: float = 100.0,
-        approach_dist: float = 0.12,
+        approach_dist: float = 0.00,
         timeout: float = 4.0,
         motion_planning: bool = True,
         PL: Literal["OMPL", "VAMP"] = "VAMP",
@@ -1404,7 +1404,7 @@ class PandaGripperPlanner(GenericPlanner):
                 flap_id,
                 target_angle_deg=target_angle_deg,
                 step_deg=25.0,
-                pull_dist=0.12,
+                pull_dist=approach_dist,
                 PL=PL,
                 timeout=timeout,
                 vamp_env=vamp_env,
@@ -1429,7 +1429,7 @@ class PandaGripperPlanner(GenericPlanner):
         # import ipdb; ipdb.set_trace()
         # if last_frame is not None and last_pose is not None:
         #     last_pos, last_orn = last_pose
-        #     # 沿 extended 方向退一点（你原逻辑：approach_dist*0.7）
+        #     # 沿 extended 方向退一点（原逻辑：approach_dist*0.7）
         #     self.prim_retreat_linear_ik(
         #         last_pos,
         #         last_orn,
@@ -1453,7 +1453,7 @@ class PandaGripperPlanner(GenericPlanner):
             start_deg=start_deg,
             end_deg=180,
             step_deg=5,
-            press_dist=0.12,
+            press_dist=approach_dist,
             interp_steps=10,
             segment_duration=0.05,
             debug_draw=True,
@@ -1461,7 +1461,7 @@ class PandaGripperPlanner(GenericPlanner):
 
         # if last_frame2 is not None and last_pose2 is not None:
         #     last_pos, last_orn = last_pose
-        #     # 沿 extended 方向退一点（你原逻辑：approach_dist*0.7）
+        #     # 沿 extended 方向退一点（原逻辑：approach_dist*0.7）
         #     self.prim_retreat_linear_ik(
         #         last_pos,
         #         last_orn,
@@ -1478,7 +1478,7 @@ class PandaGripperPlanner(GenericPlanner):
     def back_home(
         self,
         *,
-        planner: Literal['OMPL', 'VAMP'] = "OMPL",
+        PL: Literal['OMPL', 'VAMP'] = "OMPL",
         timeout: float = 4.0,
         ik_collision: bool = True,
         execute: bool = True,
@@ -1493,7 +1493,7 @@ class PandaGripperPlanner(GenericPlanner):
         return self.move_to_pose_unified(
             home_pos,
             home_orn,
-            planner=planner,
+            planner=PL,
             timeout=timeout,
             ik_collision=ik_collision,
             execute=execute,
@@ -1506,4 +1506,5 @@ class PandaGripperPlanner(GenericPlanner):
         print("[Demo] Closing a foldable box with 2 flaps ...")
         for i in range(3, 1, -1):
             self.close_flap(i, PL='VAMP')
+            self.back_home(PL='VAMP')
             print(f"Flap {i} opened.")
