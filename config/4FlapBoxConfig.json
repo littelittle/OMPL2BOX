@@ -1,0 +1,19 @@
+{
+  "mode": "4-flap box task",
+  "robot": "panda",
+  "gui": true,
+  "step_forever": true,
+  "items":{
+    "foldable_box":{
+      "box_half_h": 0.07,
+      "foldable_box_pos":[0.5, 0.0, 0.1],
+      "place_on_pedestal": true,
+      "base_yaw_range": [-0.3, 0.3]
+    }, 
+    "pedestal":{
+      "pedestal_h":0.20,
+      "size_xy": [0.40, 0.34],
+      "rgba": [0.6, 0.6, 0.6, 1.0]
+    }
+  }
+}

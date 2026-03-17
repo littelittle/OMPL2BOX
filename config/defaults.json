@@ -1,5 +1,5 @@
 {
-  "mode": "4-flap box task",
+  "mode": "mailer box task",
   "robot": "panda",
   "gui": true,
   "foldable_box_pos": [0.5, 0.0, 0.1]

@@ -1,6 +1,7 @@
 """Robotics simulation package with KUKA planner and foldable box model."""
 
-from .sim_context import make_sim, physics_from_config, create_pedestal
+from .sim_context import make_sim, physics_from_config
+from .build_stuff import create_pedestal
 # from .utils.path import interpolate_joint_line
 
 # NOTE: __all__指定了robotsim的导出白名单
