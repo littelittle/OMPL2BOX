@@ -1,6 +1,7 @@
 {
-  "mode": "mailer box task",
+  "mode": "FlapBoxTask",
   "robot": "panda",
   "gui": true,
-  "foldable_box_pos": [0.5, 0.0, 0.1]
+  "foldable_box_pos": [0.5, 0.0, 0.1],
+  "pedestal_h": 0.20
 }

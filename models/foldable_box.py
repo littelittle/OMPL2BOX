@@ -32,6 +32,7 @@ class FoldableBox:
         self.thickness = None
         self.open_angle = -1.35
         self._read_dimensions_from_urdf()
+        self.base_pos[-1] += self.base_half_extents[-1]
         # import ipdb; ipdb.set_trace()
         self.body_id = self._load_urdf()
         self.flap_joint_indices = list(range(4))

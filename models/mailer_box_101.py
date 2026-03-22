@@ -3,6 +3,7 @@ import pybullet_data
 import time
 import numpy as np
 import math
+import random
 from utils.path import draw_point
 from scene.sim_context import make_sim
 from utils.vector import _normalize
@@ -52,12 +53,11 @@ class MailerBox:
         """
         # self.scaling = 1.0
         pos = self.pos.copy()
-        # pos[2] += 0.3
         self.body_id = p.loadURDF(
             fileName=self.file_path,
             useFixedBase=True,
             basePosition=pos,
-            baseOrientation=p.getQuaternionFromEuler([0, 0, math.pi]),
+            baseOrientation=p.getQuaternionFromEuler([0, 0, math.pi+0.35]), # +0.35
             globalScaling=self.scaling,
             physicsClientId=self.cid,
         )

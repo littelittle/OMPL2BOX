@@ -4,7 +4,7 @@
 
 这是一个基于 **PyBullet + OMPL + VAMP** 的机器人操作仿真仓库。当前对代理最重要的事实只有一条：
 
-- 目前唯一相对稳定、可作为默认验证路径的是 `main.py` 中的 `panda + "4-flap box task"` demo。
+- 目前唯一相对稳定、可作为默认验证路径的是 `main.py` 中的 `panda + "Flap BoxTask"` demo。
 
 这条主链路会：
 

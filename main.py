@@ -20,7 +20,7 @@ def main():
     parser.add_argument(
         "--config",
         type=str,
-        default="config/defaults.json",
+        default="config/MailerBoxTask.json",
         help="Path to JSON config file",
     )
     parser.add_argument(
@@ -54,6 +54,7 @@ def main():
         "FlapBoxTask": FlapBoxTask,
         "MailerBoxTask": MailerBoxTask,
     }
+
     task_cls = task_map.get(mode)
     if task_cls is None:
         raise NotImplementedError(f"{mode} not supported")

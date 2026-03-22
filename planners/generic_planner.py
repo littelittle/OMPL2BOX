@@ -1,9 +1,11 @@
 import math
 import time
+import random
 from typing import Iterable, List, Optional
 
 import pybullet as p
 
+from utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross
 
 class GenericPlanner:
     """
@@ -218,3 +220,92 @@ class GenericPlanner:
                 qn[i] = best
 
         return qn
+
+    def _quat_from_normal_and_yaw(
+    self,
+    normal_world,
+    yaw: float,
+    finger_axis_is_plus_y: bool = True,  # True: +Y 对齐 normal；False: -Y 对齐 normal
+    ):
+        n = _normalize(normal_world)
+
+        # 让 EE 的 y 轴对齐 normal（或反向）
+        y = [n[0], n[1], n[2]] if finger_axis_is_plus_y else [-n[0], -n[1], -n[2]]
+
+        # 选一个不与 y 平行的参考向量，构造正交基
+        tmp = [1.0, 0.0, 0.0] if abs(y[0]) < 0.9 else [0.0, 0.0, 1.0]
+        x0 = _normalize(_cross(tmp, y))
+        z0 = _normalize(_cross(x0, y))  # 保证右手系：x × y = z
+
+        # 绕 y（也就是 normal）旋转 yaw：在 x-z 平面里转
+        c, s = math.cos(yaw), math.sin(yaw)
+        x = [x0[i] * c + z0[i] * s for i in range(3)]
+        z = [-x0[i] * s + z0[i] * c for i in range(3)]
+
+        # 列向量 [x, y, z]
+        R = [
+            [x[0], y[0], z[0]],
+            [x[1], y[1], z[1]],
+            [x[2], y[2], z[2]],
+        ]
+        return _mat_to_quat(R)
+
+    def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=20, reset=True, q_reset=None):
+        base_rest = q_reset if q_reset is not None else self.rest_pose[:] 
+        if reset:
+            q_backup = self.get_current_config()
+        self.set_robot_config(base_rest)
+
+        for t in range(max_trials):
+            if t == 1:
+                rest = base_rest
+            else:
+                # add some noise to the rest pose 
+                rest = [r + random.uniform(-0.1, 0.1) for r in base_rest]
+
+            ik = p.calculateInverseKinematics(
+                self.robot_id,
+                self.ee_link_index,
+                pos,
+                orn,
+                lowerLimits=self.lower_limits,
+                upperLimits=self.upper_limits,
+                jointRanges=[u - l for l, u in zip(self.lower_limits, self.upper_limits)],
+                restPoses=rest,
+                physicsClientId=self.cid,
+                maxNumIterations=1000,
+                residualThreshold=1e-4,
+            )
+            q_candidate = list(ik[: self.ndof])
+            q_candidate = self._wrap_into_limits(q_candidate, self.home_config)
+
+            # check in range
+            bad = False
+            for i in range(self.ndof):
+                if q_candidate[i] < self.lower_limits[i] - 1e-5 or q_candidate[i] > self.upper_limits[i] + 1e-5:
+                    print(f"[IK] joint {i} out of bounds: {q_candidate[i]:.5f} not in [{self.lower_limits[i]:.5f}, {self.upper_limits[i]:.5f}]")
+                    bad = True
+                    break
+            if bad:
+                continue
+
+            if not collision or self.is_state_valid(q_candidate) :
+                if reset:
+                    self.set_robot_config(q_backup)
+                return q_candidate
+        print("[IK] failed to find collision-free IK solution after", max_trials, "trials")
+        if reset:
+            self.set_robot_config(q_backup)
+        return None 
+
+    def sample_redundant(self, index, q_trajectory, q_reset_list, yaws, normal, pos, current_config, finger_axis_is_plus_y=False):
+        q_goal_list = []
+        for q_reset in q_reset_list:
+            for yaw in yaws:
+                orn = self._quat_from_normal_and_yaw(normal, yaw, finger_axis_is_plus_y=finger_axis_is_plus_y)
+                self.set_robot_config(current_config)
+                q_goal = self.solve_ik_collision_aware(pos, orn, collision=False, max_trials=1, reset=False, q_reset=q_reset)
+                self.set_robot_config(current_config)
+                if q_goal is not None:
+                    q_goal_list.append((q_goal, yaw))
+        q_trajectory[index] += q_goal_list
