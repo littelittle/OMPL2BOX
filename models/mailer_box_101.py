@@ -57,7 +57,7 @@ class MailerBox:
             fileName=self.file_path,
             useFixedBase=True,
             basePosition=pos,
-            baseOrientation=p.getQuaternionFromEuler([0, 0, math.pi+0.35]), # +0.35
+            baseOrientation=p.getQuaternionFromEuler([0, 0, math.pi-np.deg2rad(30)]), # +0.35
             globalScaling=self.scaling,
             physicsClientId=self.cid,
         )
@@ -94,7 +94,7 @@ class MailerBox:
             lid_angle = p.getJointState(self.body_id, self.lid_id, physicsClientId=self.cid)[0]
         if flap_angle is None:
             flap_angle = p.getJointState(self.body_id, self.flap_id, physicsClientId=self.cid)[0]
-        print(lid_angle, flap_angle)
+        # print(lid_angle, flap_angle)
 
         orign_config = p.getJointStates(self.body_id, [self.lid_id, self.flap_id], physicsClientId=self.cid)
         p.resetJointState(self.body_id, self.lid_id, targetValue=lid_angle, physicsClientId=self.cid)
@@ -108,13 +108,16 @@ class MailerBox:
         draw_point(key_world, size=0.1)
         # import ipdb; ipdb.set_trace()
         normal_local = [0.0, -1.0, 0.0]
+        horizontal_local = [1.0, 0.0, 0.0]
         normal_world = p.multiplyTransforms([0.0, 0.0, 0.0], flap_orn_w, normal_local, [0.0, 0.0, 0.0, 1.0],  physicsClientId=self.cid)[0]
         normal_world = _normalize(list(normal_world))
+        horizontal_world = p.multiplyTransforms([0.0, 0.0, 0.0], flap_orn_w, horizontal_local, [0.0, 0.0, 0.0, 1.0],  physicsClientId=self.cid)[0]
+        horizontal_world = _normalize(list(horizontal_world))
 
         p.resetJointState(self.body_id, self.lid_id, targetValue=orign_config[0][0], physicsClientId=self.cid)
         p.resetJointState(self.body_id, self.flap_id, targetValue=orign_config[1][0], physicsClientId=self.cid)
 
-        return key_world, normal_world
+        return key_world, normal_world, horizontal_world
 
 if __name__ == "__main__":
 

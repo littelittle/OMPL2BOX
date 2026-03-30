@@ -30,7 +30,7 @@ def ee_axes_in_world(body_id, ee_link, cid):
     return list(x_w), list(y_w), list(z_w)
 
 def is_feasible(lid_flap_tuple: tuple, mailerbox, planner, closed, former_yaw=None, num_samples=5, q_reset=None):
-    pos, normal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(lid_flap_tuple[1]), lid_angle=np.deg2rad(lid_flap_tuple[0]))
+    pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(lid_flap_tuple[1]), lid_angle=np.deg2rad(lid_flap_tuple[0]))
 
     # TODO: get the orn from normal and yaw, how should I determine the yaw or yaw list?
     if former_yaw is not None:
@@ -38,16 +38,16 @@ def is_feasible(lid_flap_tuple: tuple, mailerbox, planner, closed, former_yaw=No
         for i in range(1, num_samples+1):
             yaws.append(former_yaw+0.07*2.0*math.pi*i/float(max(1, num_samples)))
             yaws.append(former_yaw-0.07*2.0*math.pi*i/float(max(1, num_samples)))
-        print("former_yawwwww")
+        # print("former_yawwwww")
     else:
         # in this case, do uniform sampling from [0, 2pi)
         yaws = [2.0 * math.pi * k / float(max(1, num_samples)) for k in range(max(1, num_samples))]
     
     for i, yaw in enumerate(yaws):
-        orn = planner._quat_from_normal_and_yaw(normal, yaw, finger_axis_is_plus_y=False)
+        orn = planner._quat_from_normal_and_yaw(normal, yaw, horizontal, finger_axis_is_plus_y=False)
         q_goal = planner.solve_ik_collision_aware(pos, orn, collision=False, max_trials=1, q_reset=q_reset)
         if q_goal is not None:
-            print(yaw, i)
+            # print(yaw, i)
             return q_goal
     
     return None
@@ -90,7 +90,7 @@ def gen_2D_map(left_angle_tuple: tuple, right_angle_tuple: tuple, is_feasible=No
     plt.show()
     return feasible_map
     
-def search_traj(left_angle_tuple: tuple, right_angle_tuple: tuple, is_feasible=None, num_sample:int=10, verbose=True):
+def search_traj(left_angle_tuple: tuple, right_angle_tuple: tuple, is_feasible=None, num_sample:int=10, verbose=False):
     """
     find the feasible lid/flap angle trajectory 
     *_angle_tuple: (lid_angle, flap_angle)

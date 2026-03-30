@@ -1,4 +1,5 @@
 import math
+import random
 import numpy as np
 import pybullet as p
 from functools import partial
@@ -10,12 +11,15 @@ from test_env import is_feasible, search_traj
 from scene import create_pedestal
 from utils.yaw_dp import dp_plan_yaw_path, Q_RESET_SEEDS
 from utils.path import interpolate_joint_line
-from utils.drawer import plot_feasible_yaw_evolution_greedy
+from utils.drawer import plot_feasible_yaw_evolution_greedy, plot_threshold_3d_with_init_layer, plot_threshold_3d_with_layer_views
 
+rng = np.random.default_rng(42)
 
 class MailerBoxTask(Task):
     def setup_scene(self, ):
-        mailerbox_pos = self.config.get("mailerbox_pos", [0.6, 0.1, 0.4])
+        mailerbox_pos = np.array(self.config.get("mailerbox_pos", [0.6, 0.1, 0.4]), dtype=float)
+        mailerbox_pos[:2] += rng.uniform(-0.5, 0.5, size=2)
+        mailerbox_pos = mailerbox_pos.tolist() 
         self.closed = self.config.get("closed", False)
         self.scaling = self.config.get("scaling", 1)
         file_path = self.config.get("file_path","assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf")
@@ -36,62 +40,64 @@ class MailerBoxTask(Task):
         mailerbox = self.mailerbox
         candidate_yaw_trajectory = []
 
-        # reaching out to the flap grasp point! 
-        key_point, normal = mailerbox.get_flap_keypoint_pose()
+        # Reaching out to the flap grasp point!
+        # NOTE: We'll skip this process for now and select the optimal grasping pose after the planning is complete.
         planner.open_gripper()
-        _, _, _, start_yaw = planner.move_to_pose_with_free_yaw(key_point, normal, planner='VAMP', execute=True, ik_collision=False, approach_flip=False, yaw=np.deg2rad(180))
-        planner.close_gripper_to_width(target_width=0.0, force=1000)
 
-        # searching for potential fesible task space!
+        # Configure the order of the array
         if self.closed:
             start_angle_tuple = (90, 90)
             goal_angle_tuple = (-90, -90)
         else:
             start_angle_tuple = (-90, -90)
             goal_angle_tuple = (90, 90)
+
+        # Searching for potential fesible task space!
+        start_yaw = np.deg2rad(90)
         is_feasible_bound = partial(is_feasible, mailerbox=mailerbox, planner=planner, former_yaw=start_yaw, closed=self.closed) 
         degree_tuple_list, q_list = search_traj(start_angle_tuple, goal_angle_tuple, is_feasible_bound, num_sample=10)
-        q_trajectory = [[] for _ in range(len(degree_tuple_list))]
 
-        # following the task space to execute!
+        # TODO: Optimize the way q_trajectory and q_source_trajectory is recorded
+        q_trajectory = [[] for _ in range(len(degree_tuple_list))]
+        q_source_trajectory = [[] for _ in range(len(degree_tuple_list))]
+
+        # Initialize the yaw candidates list
+        num_steps = 10
+        max_offset = np.deg2rad(60)
+        step = max_offset / float(max(1, num_steps))
+        yaws = [np.deg2rad(90)] 
+        for k in range(1, num_steps + 1):
+            offset = k * step
+            yaws.append(yaws[0] + offset)
+            yaws.append(yaws[0] - offset)
+
+        # Initialize the q_reset fed in to the IK solver
+        # NOTE: for the adaptive iteration method, q_reset_list contains only ['home'], while pure sampling based method contains all possible q_reset 
+        q_reset_list = [
+            Q_RESET_SEEDS["home"],
+            # [0.21122026522160325, -0.44400245603577937, -0.23161109603481303, -2.743793599968008, -1.0309511129162083, 3.7166966782496167, -1.110594041641138], # this is the refined q_reset!
+            # Q_RESET_SEEDS["left_relaxed"],
+            # Q_RESET_SEEDS["right_relaxed"],
+            # Q_RESET_SEEDS["left_elbow_out"],
+            # Q_RESET_SEEDS["right_elbow_out"],
+            # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
+        ]
+
+        # Following the task space constraint to execute!
         for i, degree_tuple in enumerate(degree_tuple_list):
 
-            # Update yaw list every IK tracking step
-            num_steps = 20
-            max_offset = 0.1 * 2.0 * math.pi 
-            step = max_offset / float(max(1, num_steps))
-            yaws = [start_yaw] # if i==0 else [q_goal_list[0][1]] 
-            for k in range(1, num_steps + 1):
-                offset = k * step
-                yaws.append(yaws[0] + offset)
-                yaws.append(yaws[0] - offset)
-
-
             # Searching for feasible configuration!
-            pos, normal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
-            q_goal = None
-            q_goal_list = []
-            current_config = planner.get_current_config()
-            q_reset1 = [planner.rest_pose[i] for i in range(len(planner.get_current_config()))]
-            q_reset2 = [planner.get_current_config()[i] for i in range(len(planner.get_current_config()))]
-            q_reset3 = [(current_config[i]+planner.rest_pose[i])/2 for i in range(len(current_config))]
-            q_reset_list = [
-                Q_RESET_SEEDS["home"],
-                # [0.21122026522160325, -0.44400245603577937, -0.23161109603481303, -2.743793599968008, -1.0309511129162083, 3.7166966782496167, -1.110594041641138], # this is the refined q_reset!
-                # Q_RESET_SEEDS["left_relaxed"],
-                # Q_RESET_SEEDS["right_relaxed"],
-                # Q_RESET_SEEDS["left_elbow_out"],
-                # Q_RESET_SEEDS["right_elbow_out"],
-                # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
-            ]
+            pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
 
-            planner.sample_redundant(i, q_trajectory, q_reset_list, yaws, normal, pos, current_config)
+            current_config = planner.get_current_config()
+
+            # TODO: Optimize the params passing to planner.sample_redundant()
+            planner.sample_redundant(i, q_trajectory, q_reset_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=q_source_trajectory, source_tag={"kind":"init","step":i})
 
             if len(q_trajectory[i]) == 0:
                 q_goal = None
                 break
             else:
-                # q_goal = q_goal_list[0][0]
                 q_current = np.asarray(current_config, dtype=float)
                 q_goal, candidate_yaw = min(q_trajectory[i], key=lambda candidate: np.sum((np.asarray(candidate[0], dtype=float)-q_current)**2))
                 # candidate_yaw_trajectory.append(candidate_yaw)
@@ -118,26 +124,75 @@ class MailerBoxTask(Task):
                             print(err)
                             p.stepSimulation()
                         break
-
-
         planned_dict = dp_plan_yaw_path(feasible_by_step=q_trajectory, joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]))
 
+
         # Evaluate the feasible q_goal!
-        if planned_dict:
+        MaxIteration = 5                      # tweak this param by mode
+        sorted_idx = 0
+        for j in range(MaxIteration):
             path = planned_dict['path']
-            max_index, max_edge_cost = max(enumerate(planned_dict["path_costs"]), key=lambda x: x[1])
-            new_q_rest = path[max_index+1][0].tolist()
-            # import ipdb; ipdb.set_trace()
+            selected_index, selected_edge_cost = sorted(enumerate(planned_dict["path_costs"]),key=lambda x: x[1],reverse=True)[sorted_idx]
+            max_index, max_edge_cost = sorted(enumerate(planned_dict["path_costs"]),key=lambda x: x[1],reverse=True)[0]
+            
+            # Add some randomness ...
+            sorted_idx += 1
+            if sorted_idx > 0:
+                sorted_idx = 0
+            
+            print("the leaf local structure is:")
+            print(selected_index, selected_index+1)
+
+            # NOTE: Below is legacy, but worth another try
+            # q1_refined, q2_refined = planner.qs_refinement(path[max_index][0], path[max_index+1][0])
+            
+            new_q_rest = [path[selected_index][0].tolist(), path[selected_index+1][0].tolist()] # Bisection
+            print(f"Iter times: {j}, Max edge cost: {max_edge_cost}, Total cost: {planned_dict['total_cost']}, worst_idx: {np.argmax(planned_dict['path_costs'])}, selected_index: {selected_index}")
+            if max_edge_cost < 0: # set this threashold accordingly
+                break
 
             # Refining...
-            # NOTE: later, yaws = [np.deg2rad(130+10*i) for i in range(11)]
             for i, degree_tuple in enumerate(degree_tuple_list):
-                pos, normal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
-                planner.sample_redundant(i, q_trajectory, [new_q_rest], yaws, normal, pos, current_config)
-
+                pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
+                planner.sample_redundant(i, q_trajectory, new_q_rest, yaws, normal, horizontal, pos, current_config, q_source_trajectory=q_source_trajectory, source_tag={"kind":"refine", "iter":j+1, "from_edge":max_index})
             planned_dict = dp_plan_yaw_path(feasible_by_step=q_trajectory, joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]))
-            path = planned_dict['path']
+            
 
+        path = planned_dict['path'] 
+        path_sources = [
+            q_source_trajectory[step][cand_idx]
+            for step, cand_idx in enumerate(planned_dict["indices"])
+        ]
+        max_index, max_edge_cost = max(enumerate(planned_dict["path_costs"]), key=lambda x: x[1])
+        print(f"Iter times: {MaxIteration}, Max edge cost: {max_edge_cost}, Total cost: {planned_dict['total_cost']}, worst_idx: {np.argmax(planned_dict['path_costs'])}")
+        # for step, ((q_goal, yaw), src) in enumerate(zip(path, path_sources)):
+        #     print(f"[path step {step}] yaw={yaw:.4f}")
+        #     print(f"  source = {src}")
+
+        # NOTE: temp, simply for saving the trajectory
+        # q_list = [i[0] for i in path]
+        # import pickle
+        # with open('data/q6.pkl', 'wb') as f:
+        #     pickle.dump(q_list, f)
+        # return 
+
+        # Start excuting...
+        Excute = True
+        if Excute:
+            # move to grasp...
+            grasp_q_goal = path[0][0]
+            ompl_path = planner.plan_ompl(planner.get_current_config(), grasp_q_goal, num_waypoints=200, optimal=True)
+            if ompl_path is None:
+                raise RuntimeError("path is none!")
+            q_traj = []
+            for i in range(ompl_path.getStateCount()):
+                s = ompl_path.getState(i)
+                q_traj.append([float(s[j]) for j in range(planner.ndof)])
+            planner.execute_joint_trajectory_real(q_traj, dt=0.05, interpolate=False)
+            
+            planner.close_gripper_to_width(target_width=0.0, force=1000)
+
+            # open the flap/lid...
             for i, (q_goal, yaw) in enumerate(path):
                 candidate_yaw_trajectory.append(yaw)
                 q_start = planner.get_current_config()
@@ -146,16 +201,44 @@ class MailerBoxTask(Task):
                 planner.close_gripper_to_width(target_width=0, force=1000, wait=0.5)
 
 
-        # Visualization for C-bundles!
-        # plot_feasible_yaw_evolution_greedy(
-        #     q_trajectory,
-        #     chosen_yaw_trajectory=candidate_yaw_trajectory,
-        #     save_path=f"exp/merge_bundles/{self.closed}closed_{self.scaling}_baesline_new.png",
+        # Visualization for C-bundles...
+        plot_feasible_yaw_evolution_greedy(
+            q_trajectory,
+            chosen_yaw_trajectory=candidate_yaw_trajectory,
+            save_path=f"exp/03_28/{self.closed}closed_{self.scaling}_iter_mix_rand.png",
+            show=True,
+            use_degree=True,
+            angular_indices=range(7),   # Panda arm joints
+            one_to_one=False,           
+        )
+        
+        # plot_threshold_3d_with_init_layer(
+        #     q_trajectory=q_trajectory,
+        #     q_source_trajectory=q_source_trajectory,
+        #     planned_dict=planned_dict,
+        #     distance_threshold=0.9,
+        #     save_path=f"exp/NEW/{self.closed}closed_{self.scaling}_threshold_3d_with_init.png",
         #     show=True,
         #     use_degree=True,
-        #     angular_indices=range(7),   # Panda arm joints
-        #     one_to_one=False,           
+        #     z_mode="refine_iter",
+        #     draw_failed_exec_edges=False,
+        #     annotate_exec_dist=False,
         # )
+
+        # plot_threshold_3d_with_layer_views(
+        #     q_trajectory=q_trajectory,
+        #     q_source_trajectory=q_source_trajectory,
+        #     planned_dict=planned_dict,
+        #     distance_threshold=1.11,
+        #     focus_refine_iter="last",   # 或者 0, 1, 2 ...
+        #     save_path=f"exp/paper/{self.closed}closed_{self.scaling}_3d_with_layer_views_max_classic.png",
+        #     show=True,
+        #     use_degree=True,
+        #     draw_failed_exec_edges=False,
+        #     annotate_exec_dist=False,
+        # )
+
+
 
         # Ending...
         if self.closed==False:

@@ -69,6 +69,13 @@ class PandaGripperPlanner(GenericPlanner):
 
         self._extract_active_joints()
 
+        self.active_ids = []
+        for ji in range(p.getNumJoints(self.robot_id, physicsClientId=self.cid)):
+            info = p.getJointInfo(self.robot_id, ji, physicsClientId=self.cid)
+            if info[2] in (p.JOINT_PRISMATIC, p.JOINT_REVOLUTE):
+                self.active_ids.append(ji)
+
+
         self.ndof = len(self.joint_indices)
         # Slightly tucked home pose to keep gripper over the table.
         self.home_config = [0.0, -0.6, 0.0, -2.4, 0.0, 1.9, 0.8]
@@ -144,8 +151,8 @@ class PandaGripperPlanner(GenericPlanner):
                 #     ul = 4.4 # 4.8
                 # if j==1: # the second joint is better limited
                 #     ll, ul = -2.3, 2.3
-                if j==6: # the last joint is better limited
-                    ll, ul = -3.14, 3.14
+                # if j==6: # the last joint is better limited
+                #     ll, ul = -3.14, 3.14
                 if ul < ll or (ll == 0 and ul == -1): # for simplicty, ignore limits from URDF
                     ll, ul = -3.14, 3.14
                 self.lower_limits.append(ll)

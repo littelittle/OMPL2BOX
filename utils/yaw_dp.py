@@ -112,26 +112,35 @@ def dp_plan_yaw_path(
 
     # dp_costs[i][j] = 从第 i 层第 j 个状态出发，到最后一层的最小累计代价
     dp_costs: List[np.ndarray] = []
+    dp_sums: List[np.ndarray] = []
+    dp_max: List[np.ndarray] = []
     next_choice: List[np.ndarray] = []
 
     for layer in proc_layers:
         m = len(layer["raw"])
         dp_costs.append(np.full(m, np.inf, dtype=float))
+        dp_sums.append(np.full(m, np.inf, dtype=float))
+        dp_max.append(np.full(m, np.inf, dtype=float))
         next_choice.append(np.full(m, -1, dtype=int))
 
     # 最后一层：cost-to-go = 0
     last_idx = n_steps - 1
     dp_costs[last_idx][:] = 0.0
+    dp_sums[last_idx][:] = 0.0
+    dp_max[last_idx][:] = 0.0
 
     # 从后往前做 DP
     for i in range(n_steps - 2, -1, -1):
         curr_qs = proc_layers[i]["qs"]       # shape: [m, dof]
         next_qs = proc_layers[i + 1]["qs"]   # shape: [k, dof]
         next_dp = dp_costs[i + 1]            # shape: [k]
+        next_sum_dp = dp_sums[i+1]           # shape: [k]
+        next_max_dp = dp_max[i+1]            # shape: [k]
 
         for j, q_curr in enumerate(curr_qs):
             # 计算 q_curr 到下一层所有候选的距离
             diffs = next_qs - q_curr[None, :]
+            # diffs[:-1] = diffs[:-1] % (2*math.pi)
             if joint_weights is not None:
                 diffs = diffs * joint_weights[None, :]
             dists = np.linalg.norm(diffs, axis=1)  # [k]
@@ -146,7 +155,9 @@ def dp_plan_yaw_path(
                     continue
 
                 total = np.full_like(dists, np.inf, dtype=float)
-                total[valid] = dists[valid] + next_dp[valid]
+                # total[valid] = dists[valid] + next_dp[valid]
+                total[valid] = np.maximum(dists[valid], next_max_dp[valid]) + 0.5*(dists[valid] + 0.5*next_sum_dp[valid])
+                # total[valid] = dists[valid]**3 + next_dp[valid]
             else:
                 # 软惩罚：超过阈值允许，但加大代价
                 penalty = np.where(dists > jump_threshold, big_penalty, 0.0)
@@ -155,9 +166,13 @@ def dp_plan_yaw_path(
 
             best_k = int(np.argmin(total))
             best_cost = float(total[best_k])
+            best_sum_cost = float(dists[best_k]+next_sum_dp[best_k])
+            best_max_cost = max(dists[best_k], next_max_dp[best_k])
 
             if math.isfinite(best_cost):
                 dp_costs[i][j] = best_cost
+                dp_sums[i][j] = best_sum_cost
+                dp_max[i][j] = best_max_cost
                 next_choice[i][j] = best_k
 
     # 选择第 0 层起点
