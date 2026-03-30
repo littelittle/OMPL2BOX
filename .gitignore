@@ -5,3 +5,6 @@ temp
 .obj
 robot_sim/assets/101/
 robot_sim/assets/101.zip
+exp/
+assets/
+data/
