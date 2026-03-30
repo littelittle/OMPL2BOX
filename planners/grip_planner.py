@@ -15,13 +15,11 @@ import vamp
 
 import numpy as np
 
-from .foldable_box import FoldableBox
-from .utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross
-from .utils.path import interpolate_joint_line, draw_point, omplpath2traj
-from .utils.pointcloud import pts2obj
-from .utils.contactframe import ContactFrame
+from utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross
+from utils.path import interpolate_joint_line, draw_point, omplpath2traj
+from utils.pointcloud import pts2obj
+from utils.contactframe import ContactFrame
 from .generic_planner import GenericPlanner
-from .suck_planner import KukaOmplPlanner
 
 class PandaGripperPlanner(GenericPlanner):
     """
@@ -70,6 +68,13 @@ class PandaGripperPlanner(GenericPlanner):
         self.tip2body=[0.1, 0.0, 0.0]
 
         self._extract_active_joints()
+
+        self.active_ids = []
+        for ji in range(p.getNumJoints(self.robot_id, physicsClientId=self.cid)):
+            info = p.getJointInfo(self.robot_id, ji, physicsClientId=self.cid)
+            if info[2] in (p.JOINT_PRISMATIC, p.JOINT_REVOLUTE):
+                self.active_ids.append(ji)
+
 
         self.ndof = len(self.joint_indices)
         # Slightly tucked home pose to keep gripper over the table.
@@ -146,8 +151,8 @@ class PandaGripperPlanner(GenericPlanner):
                 #     ul = 4.4 # 4.8
                 # if j==1: # the second joint is better limited
                 #     ll, ul = -2.3, 2.3
-                if j==6: # the last joint is better limited
-                    ll, ul = -3.14, 3.14
+                # if j==6: # the last joint is better limited
+                #     ll, ul = -3.14, 3.14
                 if ul < ll or (ll == 0 and ul == -1): # for simplicty, ignore limits from URDF
                     ll, ul = -3.14, 3.14
                 self.lower_limits.append(ll)
@@ -179,12 +184,6 @@ class PandaGripperPlanner(GenericPlanner):
                 targetVelocity=0.0,
                 physicsClientId=self.cid,
             )
-
-    def get_current_config(self) -> List[float]:
-        states = p.getJointStates(
-            self.robot_id, self.joint_indices, physicsClientId=self.cid
-        )
-        return [s[0] for s in states]
 
     # --------- Pybullet + VAMP helpers -----------
     def pybullet_depth_to_pointcloud(
@@ -703,59 +702,6 @@ class PandaGripperPlanner(GenericPlanner):
 
         return qn
 
-    def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=20, reset=True, q_reset=None):
-        base_rest = q_reset if q_reset else self.rest_pose[:] 
-        if reset:
-            q_backup = self.get_current_config()
-            self.set_robot_config(base_rest)
-
-        for t in range(max_trials):
-            if t == 1:
-                rest = base_rest
-            else:
-                # add some noise to the rest pose 
-                rest = [
-                    r + random.uniform(-0.1, 0.1) for r in base_rest
-                ]
-
-            ik = p.calculateInverseKinematics(
-                self.robot_id,
-                self.ee_link_index,
-                pos,
-                orn,
-                lowerLimits=self.lower_limits,
-                upperLimits=self.upper_limits,
-                jointRanges=[u - l for l, u in zip(self.lower_limits, self.upper_limits)],
-                restPoses=rest,
-                physicsClientId=self.cid,
-                maxNumIterations=1000,
-                residualThreshold=1e-4,
-            )
-            q_candidate = list(ik[: self.ndof])
-
-            q_candidate = self._wrap_into_limits(q_candidate, self.home_config)
-
-            bad = False
-
-            # check in range
-            for i in range(self.ndof):
-                if q_candidate[i] < self.lower_limits[i] - 1e-5 or q_candidate[i] > self.upper_limits[i] + 1e-5:
-                    print(f"[IK] joint {i} out of bounds: {q_candidate[i]:.5f} not in [{self.lower_limits[i]:.5f}, {self.upper_limits[i]:.5f}]")
-                    bad = True
-                    break
-            if bad:
-                continue
-
-            # import ipdb; ipdb.set_trace()
-            if not collision or self.is_state_valid(q_candidate) :
-                if reset:
-                    self.set_robot_config(q_backup)
-                return q_candidate
-        print("[IK] failed to find collision-free IK solution after", max_trials, "trials")
-        if reset:
-            self.set_robot_config(q_backup)
-        return None 
-
     def move_to_pose_unified(
         self,
         pos, orn,
@@ -805,35 +751,6 @@ class PandaGripperPlanner(GenericPlanner):
             self.execute_joint_trajectory(q_traj, dt=0.05)
 
         return q_traj, vamp_env
-
-    def _quat_from_normal_and_yaw(
-        self,
-        normal_world,
-        yaw: float,
-        finger_axis_is_plus_y: bool = True,  # True: +Y 对齐 normal；False: -Y 对齐 normal
-    ):
-        n = _normalize(normal_world)
-
-        # 让 EE 的 y 轴对齐 normal（或反向）
-        y = [n[0], n[1], n[2]] if finger_axis_is_plus_y else [-n[0], -n[1], -n[2]]
-
-        # 选一个不与 y 平行的参考向量，构造正交基
-        tmp = [1.0, 0.0, 0.0] if abs(y[0]) < 0.9 else [0.0, 0.0, 1.0]
-        x0 = _normalize(_cross(tmp, y))
-        z0 = _normalize(_cross(x0, y))  # 保证右手系：x × y = z
-
-        # 绕 y（也就是 normal）旋转 yaw：在 x-z 平面里转
-        c, s = math.cos(yaw), math.sin(yaw)
-        x = [x0[i] * c + z0[i] * s for i in range(3)]
-        z = [-x0[i] * s + z0[i] * c for i in range(3)]
-
-        # 列向量 [x, y, z]
-        R = [
-            [x[0], y[0], z[0]],
-            [x[1], y[1], z[1]],
-            [x[2], y[2], z[2]],
-        ]
-        return _mat_to_quat(R)
 
     def move_to_pose_with_free_yaw(
         self,
@@ -1008,7 +925,6 @@ class PandaGripperPlanner(GenericPlanner):
                 print(last_info)
                 continue
 
-            # 合爪，直到达到一定法向力就提前停（你现在 close_gripper 已支持）
             self.close_gripper(wait=close_wait, flap_id=flap_id, min_normal_force=min_normal_force)
             # import ipdb; ipdb.set_trace()
             g_ok, info = self.check_grasping_flap(
@@ -1234,134 +1150,8 @@ class PandaGripperPlanner(GenericPlanner):
     def close_flap(
         self,
         flap_id: int,
-        target_angle_deg: float = 120.0,
-        approach_dist: float = 0.12,
-        timeout: float = 4.0,
-        motion_planning = True,
-        PL: Literal['OMPL', 'VAMP'] = 'OMPL',
-    ):
-        
-        # Phase 1: reach out to the flap and attach it 
-        self.box_attached = 4 # 4 means all flaps should be taken into account for collision checking
-        self.reach_flap(flap_id, approach_dist=approach_dist, timeout=timeout, PL=PL)
-        self.close_gripper(wait=5, flap_id=flap_id)
-        while not self.check_grasping_flap(flap_id, debug_draw=True)[0]:
-            self.reach_flap(flap_id, approach_dist=approach_dist, timeout=timeout, PL=PL)
-            self.close_gripper(wait=5, flap_id=flap_id)
-
-        # Phase 2: lift the flap by opening the gripper while planning motion 
-        self.box_attached = flap_id # the attached flap id is ignored for collision checking
-        if motion_planning:
-            stride=10
-            while True:
-                ok = self.check_grasping_flap(flap_id, debug_draw=True)
-                if not ok[0]:
-                    self.box_attached = 4
-                    print(f"[Flap] lost grasping on flap {flap_id} at angle {current_degree} deg")
-                    print("retrying...")
-                    self.reach_flap(flap_id, approach_dist=approach_dist, timeout=timeout)
-                    self.close_gripper(wait=5)
-                    self.box_attached = flap_id
-                _, _, _, _, current_angle = self.oracle_function(flap_id)
-                current_degree = math.degrees(current_angle)
-                if abs(current_degree) > target_angle_deg:
-                    break
-                key_goal, normal_goal, axis_goal, extended_goal, _ = self.oracle_function(
-                    flap_id, angle=math.radians(current_degree-10)
-                )
-                print(f"current degree is {current_degree}")
-                goal_orn = quat_from_normal_and_axis(extended_goal, axis_goal)
-                center_pull_dist = 0.12
-                key_goal_pulled = [
-                    key_goal[i] + extended_goal[i] * center_pull_dist
-                    for i in range(3)
-                ]
-
-                q_goal = self.solve_ik_collision_aware(key_goal_pulled, goal_orn, collision=False)
-                # self.close_gripper(wait=0.0)
-
-                q_start = self.get_current_config()
-                # import ipdb; ipdb.set_trace()
-                if PL == 'OMPL':
-                    path = self.plan_ompl(q_start, q_goal, num_waypoints=50)
-                    # OMPL path -> q_traj
-                    q_traj = []
-                    for i in range(path.getStateCount()):
-                        s = path.getState(i)
-                        q_traj.append([float(s[j]) for j in range(self.ndof)])
-                    path = q_traj
-                elif PL == 'VAMP':
-                    path, _ = self.plan_vamp(q_start, q_goal)
-                print("the lenght of the path is: ", len(path))
-                # traj = omplpath2traj(path_open)
-                self.execute_joint_trajectory_real(path, segment_duration=0.1)
-        else: # using IK interpolation
-            for delta_angle in range(-int(math.degrees(self.oracle_function(flap_id)[-1])), int(target_angle_deg)+1, 5):
-                key_goal, normal_goal, axis_goal, extended_goal, _ = self.oracle_function(
-                    flap_id, angle=-math.radians(delta_angle)
-                )
-                goal_orn = quat_from_normal_and_axis(extended_goal, axis_goal)
-
-                center_pull_dist = 0.12
-                key_goal_pulled = [
-                    key_goal[i] + extended_goal[i] * center_pull_dist
-                    for i in range(3)
-                ]
-
-                q_goal = self.solve_ik_collision_aware(key_goal_pulled, goal_orn, collision=True)
-                q_start = self.get_current_config()
-                traj = interpolate_joint_line(q_start, q_goal, 90)
-                self.execute_joint_trajectory_real(traj)
-                ok = self.check_grasping_flap(flap_id, debug_draw=True)
-                if not ok[0]:
-                    print(f"[Flap] lost grasping on flap {flap_id} at angle {delta_angle} deg")
-                    print("retrying...")
-                    self.reach_flap(flap_id, approach_dist=approach_dist, timeout=timeout)
-                    self.close_gripper(wait=0.5)
-                self.close_gripper(wait=0.0)
-        
-        self.open_gripper()
-
-        retreat_pos = [key_goal_pulled[i] + extended_goal[i] * approach_dist * 0.7 for i in range(3)]
-        q_retreat = self.solve_ik_collision_aware(retreat_pos, goal_orn, collision=True)
-        retreat_traj = interpolate_joint_line(self.get_current_config(), q_retreat, 45)
-        self.execute_joint_trajectory_real(retreat_traj)
-
-        # Phase3: fully close the flap to the target angle using stabbing motion
-        for delta_angle in range(-int(math.degrees(self.oracle_function(flap_id)[-1])), 180, 5):
-            key_goal, normal_goal, axis_goal, _, _ = self.oracle_function(
-                flap_id, angle=-math.radians(delta_angle)
-            )
-            goal_orn = quat_from_normal_and_axis([-i for i in normal_goal], axis_goal)
-            draw_point(key_goal, [0, 1, 0], size=0.2, life_time=500)
-            center_pull_dist = 0.12
-            key_goal_pulled = [key_goal[i] - normal_goal[i] * center_pull_dist for i in range(3)]
-
-            q_goal = self.solve_ik_collision_aware(key_goal_pulled, goal_orn, collision=False)
-            # self.set_robot_config(q_goal)
-            # import ipdb; ipdb.set_trace()
-            q_start = self.get_current_config()
-            traj = interpolate_joint_line(q_start, q_goal, 90)
-            self.execute_joint_trajectory_real(traj)
-            self.close_gripper(wait=0.0)
-        # import ipdb; ipdb.set_trace()
-        
-        retreat_pos = [
-            key_goal_pulled[i] - normal_goal[i] * approach_dist  for i in range(3)
-        ]
-        q_retreat = self.solve_ik_collision_aware(retreat_pos, goal_orn, collision=True)
-        retreat_traj = interpolate_joint_line(
-            self.get_current_config(), q_retreat, 90
-        )
-        self.execute_joint_trajectory_real(retreat_traj)
-        # import ipdb; ipdb.set_trace()
-        self.box_attached = 4
-
-    def close_flap(
-        self,
-        flap_id: int,
         target_angle_deg: float = 100.0,
-        approach_dist: float = 0.12,
+        approach_dist: float = 0.00,
         timeout: float = 4.0,
         motion_planning: bool = True,
         PL: Literal["OMPL", "VAMP"] = "VAMP",
@@ -1378,7 +1168,7 @@ class PandaGripperPlanner(GenericPlanner):
         # -------------------------
         # Phase 1: acquire pinch
         # -------------------------
-        self.box_attached = 4  # 抓取前：所有 flap 都算碰撞
+        self.box_attached = 4  # 抓取前所有 flap 都算碰撞
         ok, grasp_frame, grasp_info = self.prim_acquire_pinch(
             flap_id,
             approach_dist=approach_dist,
@@ -1396,7 +1186,7 @@ class PandaGripperPlanner(GenericPlanner):
         # -------------------------
         # Phase 2: follow hinge (planning)
         # -------------------------
-        self.box_attached = flap_id  # 抓住后：忽略该 flap 的碰撞 + VAMP 点云里可排除该 link
+        self.box_attached = flap_id  # 抓住后忽略该 flap 的碰撞
 
         vamp_env = None
         if motion_planning:
@@ -1404,7 +1194,7 @@ class PandaGripperPlanner(GenericPlanner):
                 flap_id,
                 target_angle_deg=target_angle_deg,
                 step_deg=25.0,
-                pull_dist=0.12,
+                pull_dist=approach_dist,
                 PL=PL,
                 timeout=timeout,
                 vamp_env=vamp_env,
@@ -1426,10 +1216,10 @@ class PandaGripperPlanner(GenericPlanner):
         # Phase 2.5: release + retreat a bit
         # -------------------------
         self.open_gripper()
-        # import ipdb; ipdb.set_trace()
+
         # if last_frame is not None and last_pose is not None:
         #     last_pos, last_orn = last_pose
-        #     # 沿 extended 方向退一点（你原逻辑：approach_dist*0.7）
+        #     # 沿 extended 方向退一点
         #     self.prim_retreat_linear_ik(
         #         last_pos,
         #         last_orn,
@@ -1451,9 +1241,9 @@ class PandaGripperPlanner(GenericPlanner):
         last_frame2, last_pose2 = self.prim_press_stab_sequence(
             flap_id,
             start_deg=start_deg,
-            end_deg=180,
+            end_deg=170,
             step_deg=5,
-            press_dist=0.12,
+            press_dist=approach_dist,
             interp_steps=10,
             segment_duration=0.05,
             debug_draw=True,
@@ -1461,7 +1251,7 @@ class PandaGripperPlanner(GenericPlanner):
 
         # if last_frame2 is not None and last_pose2 is not None:
         #     last_pos, last_orn = last_pose
-        #     # 沿 extended 方向退一点（你原逻辑：approach_dist*0.7）
+        #     # 沿 extended 方向退一点（原逻辑：approach_dist*0.7）
         #     self.prim_retreat_linear_ik(
         #         last_pos,
         #         last_orn,
@@ -1478,7 +1268,7 @@ class PandaGripperPlanner(GenericPlanner):
     def back_home(
         self,
         *,
-        planner: Literal['OMPL', 'VAMP'] = "OMPL",
+        PL: Literal['OMPL', 'VAMP'] = "OMPL",
         timeout: float = 4.0,
         ik_collision: bool = True,
         execute: bool = True,
@@ -1493,17 +1283,10 @@ class PandaGripperPlanner(GenericPlanner):
         return self.move_to_pose_unified(
             home_pos,
             home_orn,
-            planner=planner,
+            planner=PL,
             timeout=timeout,
             ik_collision=ik_collision,
             execute=execute,
             vamp_env=vamp_env,
             rebuild_vamp_env=rebuild_vamp_env,
         )
-
-    # --------- tasks -----------
-    def close_double_flap(self,):
-        print("[Demo] Closing a foldable box with 2 flaps ...")
-        for i in range(3, 1, -1):
-            self.close_flap(i, PL='VAMP')
-            print(f"Flap {i} opened.")

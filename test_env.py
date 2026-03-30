@@ -10,14 +10,16 @@ import math
 
 from functools import partial
 
-from robot_sim import (
-    PandaGripperPlanner,
+from scene import (
     make_sim,
     physics_from_config,
-    MailerBox,
     create_pedestal,
-    interpolate_joint_line,
 )
+
+from utils.path import interpolate_joint_line
+from models import MailerBox
+
+from planners import PandaGripperPlanner
 
 def ee_axes_in_world(body_id, ee_link, cid):
     ls = p.getLinkState(body_id, ee_link, computeForwardKinematics=True, physicsClientId=cid)
@@ -28,7 +30,7 @@ def ee_axes_in_world(body_id, ee_link, cid):
     return list(x_w), list(y_w), list(z_w)
 
 def is_feasible(lid_flap_tuple: tuple, mailerbox, planner, closed, former_yaw=None, num_samples=5, q_reset=None):
-    pos, normal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(lid_flap_tuple[1]), lid_angle=np.deg2rad(lid_flap_tuple[0]))
+    pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(lid_flap_tuple[1]), lid_angle=np.deg2rad(lid_flap_tuple[0]))
 
     # TODO: get the orn from normal and yaw, how should I determine the yaw or yaw list?
     if former_yaw is not None:
@@ -36,16 +38,16 @@ def is_feasible(lid_flap_tuple: tuple, mailerbox, planner, closed, former_yaw=No
         for i in range(1, num_samples+1):
             yaws.append(former_yaw+0.07*2.0*math.pi*i/float(max(1, num_samples)))
             yaws.append(former_yaw-0.07*2.0*math.pi*i/float(max(1, num_samples)))
-        print("former_yawwwww")
+        # print("former_yawwwww")
     else:
         # in this case, do uniform sampling from [0, 2pi)
         yaws = [2.0 * math.pi * k / float(max(1, num_samples)) for k in range(max(1, num_samples))]
     
     for i, yaw in enumerate(yaws):
-        orn = planner._quat_from_normal_and_yaw(normal, yaw, finger_axis_is_plus_y=False)
+        orn = planner._quat_from_normal_and_yaw(normal, yaw, horizontal, finger_axis_is_plus_y=False)
         q_goal = planner.solve_ik_collision_aware(pos, orn, collision=False, max_trials=1, q_reset=q_reset)
         if q_goal is not None:
-            print(yaw, i)
+            # print(yaw, i)
             return q_goal
     
     return None
@@ -88,7 +90,7 @@ def gen_2D_map(left_angle_tuple: tuple, right_angle_tuple: tuple, is_feasible=No
     plt.show()
     return feasible_map
     
-def search_traj(left_angle_tuple: tuple, right_angle_tuple: tuple, is_feasible=None, num_sample:int=10, verbose=True):
+def search_traj(left_angle_tuple: tuple, right_angle_tuple: tuple, is_feasible=None, num_sample:int=10, verbose=False):
     """
     find the feasible lid/flap angle trajectory 
     *_angle_tuple: (lid_angle, flap_angle)
@@ -282,7 +284,7 @@ def main(closed=False):
     # TODO:figure out the graspable region of the mailerbox_pos
     mailerbox_pos = [0.6, 0.1, 0.4]
 
-    mailerbox = MailerBox(cid, file_path="robot_sim/assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf", scaling=1, pos=mailerbox_pos, closed=closed)
+    mailerbox = MailerBox(cid, file_path="assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf", scaling=1, pos=mailerbox_pos, closed=closed)
     box_id = mailerbox.body_id
     # pedestal_id = create_pedestal(cid, center_xy=[mailerbox_pos[0], mailerbox_pos[1]], height=mailerbox_pos[2])
 
