@@ -9,7 +9,7 @@ from scene.sim_context import make_sim
 from utils.vector import _normalize
 
 class MailerBox:
-    def __init__(self, cid, file_path, scaling=1.0, pos=[0.0, 0.0, 0.0], closed=False):
+    def __init__(self, cid, file_path, scaling=1.0, pos=[0.0, 0.0, 0.0], yaw=0.0, closed=False):
         self.cid = cid
         self.body_id = None
         self.lid_id = None
@@ -17,6 +17,7 @@ class MailerBox:
         self.file_path = file_path
         self.scaling = scaling
         self.pos = pos
+        self.yaw = yaw
         
         self._load_urdf()
 
@@ -57,7 +58,7 @@ class MailerBox:
             fileName=self.file_path,
             useFixedBase=True,
             basePosition=pos,
-            baseOrientation=p.getQuaternionFromEuler([0, 0, math.pi-np.deg2rad(45)]), # +0.35
+            baseOrientation=p.getQuaternionFromEuler([0, 0, math.pi+np.deg2rad(self.yaw)]), 
             globalScaling=self.scaling,
             physicsClientId=self.cid,
         )

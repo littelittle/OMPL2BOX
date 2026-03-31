@@ -14,22 +14,22 @@ from utils.path import interpolate_joint_line
 from utils.drawer import plot_feasible_yaw_evolution_greedy, plot_threshold_3d_with_init_layer, plot_threshold_3d_with_layer_views
 
 
-rng = np.random.default_rng(42)
 
 class MailerBoxTask(Task):
     def setup_scene(self, ):
-        mailerbox_pos = np.array(self.config.get("mailerbox_pos", [0.6, 0.1, 0.4]), dtype=float)
-        mailerbox_pos[:2] += rng.uniform(-0.5, 0.5, size=2)
+        mailerbox_pos = np.array(self.config.get("box_pos", [0.6, 0.1, 0.4]), dtype=float)
         mailerbox_pos = mailerbox_pos.tolist() 
+        mailerbox_yaw = self.config.get('box_yaw', 0.0)
         self.closed = self.config.get("closed", False)
         self.scaling = self.config.get("scaling", 1)
-        file_path = self.config.get("file_path","assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf")
+        self.method = self.config.get("method", "Iteration")
 
         # create the pedestal
-        create_pedestal(self.sim.cid, mailerbox_pos[:2], size_xy=(0.2, 0.2), height=0.35)
+        create_pedestal(self.sim.cid, mailerbox_pos[:2], size_xy=(0.2, 0.2), height=mailerbox_pos[2]-0.05)
 
         # set up the mailerbox
-        self.mailerbox = MailerBox(self.sim.cid, file_path=file_path, scaling=self.scaling, pos=mailerbox_pos, closed=self.closed)
+        file_path = self.config.get("file_path","assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf")
+        self.mailerbox = MailerBox(self.sim.cid, file_path=file_path, scaling=self.scaling, pos=mailerbox_pos, yaw=mailerbox_yaw, closed=self.closed)
         box_id = self.mailerbox.body_id
 
         # set up the robot 
@@ -73,10 +73,7 @@ class MailerBoxTask(Task):
             yaws.append(yaws[0] - offset)
 
         # Initialize the q_reset fed in to the IK solver
-        # NOTE: for the adaptive iteration method, q_reset_list contains only ['home'], while pure sampling based method contains all possible q_reset 
-        METHOD = "AdaptiveIter" # or "PureSampling"
-        METHOD = "PureSampling"
-        if METHOD == "AdaptiveIter": 
+        if self.method == "Iteration": 
             q_reset_list = [
                 Q_RESET_SEEDS["home"],
                 # [0.21122026522160325, -0.44400245603577937, -0.23161109603481303, -2.743793599968008, -1.0309511129162083, 3.7166966782496167, -1.110594041641138], # this is the refined q_reset!
@@ -86,9 +83,9 @@ class MailerBoxTask(Task):
                 Q_RESET_SEEDS["right_elbow_out"],
                 # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
             ]
-            MaxIteration = 2                           # tweak this param by mode
+            MaxIteration = 5                           # tweak this param by mode
 
-        elif METHOD == "PureSampling":
+        elif self.method == "Sampling":
             q_reset_list = [
                 Q_RESET_SEEDS["home"],
                 # [0.21122026522160325, -0.44400245603577937, -0.23161109603481303, -2.743793599968008, -1.0309511129162083, 3.7166966782496167, -1.110594041641138], # this is the refined q_reset!
@@ -98,7 +95,7 @@ class MailerBoxTask(Task):
                 Q_RESET_SEEDS["right_elbow_out"],
                 # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
             ]
-            q_reset_list += uniform_q_sampling(10)
+            q_reset_list += uniform_q_sampling(5)
             MaxIteration = 0
 
 
@@ -107,7 +104,6 @@ class MailerBoxTask(Task):
 
             # Searching for feasible configuration!
             pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
-
             current_config = planner.get_current_config()
 
             # TODO: Optimize the params passing to planner.sample_redundant()
@@ -163,12 +159,19 @@ class MailerBoxTask(Task):
 
             # NOTE: Below is legacy, but worth another try
             # q1_refined, q2_refined = planner.qs_refinement(path[max_index][0], path[max_index+1][0])
-            
-            new_q_rest_list = [path[selected_index][0].tolist(), path[selected_index+1][0].tolist()] # Bisection
+
+            # NOTE: Not good at all! 
+            # q1_list, q2_list = [q[0] for q in q_trajectory[selected_index]], [q[0] for q in q_trajectory[selected_index+1]]
+            # q1_array = np.asarray(q1_list, dtype=float)
+            # q2_array = np.asarray(q2_list, dtype=float)
+            # pairwise_dist_sq = np.sum((q1_array[:, None, :] - q2_array[None, :, :]) ** 2, axis=2)
+            # q1_idx, q2_idx = np.unravel_index(np.argmin(pairwise_dist_sq), pairwise_dist_sq.shape)
+            # new_q_rest_list = [q1_array[q1_idx].tolist(), q2_array[q2_idx].tolist()]
+
+            new_q_rest_list = [path[selected_index][0].tolist(), path[selected_index+1][0].tolist()]
             print(f"Iter times: {j}, Max edge cost: {max_edge_cost}, Total cost: {planned_dict['total_cost']}, worst_idx: {np.argmax(planned_dict['path_costs'])}, selected_index: {selected_index}")
             if max_edge_cost < 0: # set this threashold accordingly
                 break
-
             # Refining...
             for i, degree_tuple in enumerate(degree_tuple_list):
                 # new_q_rest = [new_q_rest_list[1]] if i <= selected_index else [new_q_rest_list[0]]
@@ -176,10 +179,10 @@ class MailerBoxTask(Task):
                     temp_q_rest_list = new_q_rest_list.copy()
                 else:
                     continue
-                # if i > 0:
+                # if i > 0
                 #     temp_q_rest_list.append(path[i-1][0].tolist())
                 # if i < len(degree_tuple)-1:
-                #     temp_q_rest_list.append(path[i+1][0].tolist())
+                #     temp_q_:rest_list.append(path[i+1][0].tolist())
                 pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
                 planner.sample_redundant(i, q_trajectory, temp_q_rest_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=q_source_trajectory, source_tag={"kind":"refine", "iter":j+1, "from_edge":max_index})
             planned_dict = dp_plan_yaw_path(feasible_by_step=q_trajectory, joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]))
@@ -229,15 +232,15 @@ class MailerBoxTask(Task):
 
 
         # Visualization for C-bundles...
-        plot_feasible_yaw_evolution_greedy(
-            q_trajectory,
-            chosen_yaw_trajectory=candidate_yaw_trajectory,
-            save_path=f"exp/03_28/{self.closed}closed_{self.scaling}_iter_mix_rand.png",
-            show=True,
-            use_degree=True,
-            angular_indices=range(7),   # Panda arm joints
-            one_to_one=False,           
-        )
+        # plot_feasible_yaw_evolution_greedy(
+        #     q_trajectory,
+        #     chosen_yaw_trajectory=candidate_yaw_trajectory,
+        #     save_path=f"exp/03_28/{self.closed}closed_{self.scaling}_iter_mix_rand.png",
+        #     show=True,
+        #     use_degree=True,
+        #     angular_indices=range(7),   # Panda arm joints
+        #     one_to_one=False,           
+        # )
         
         # plot_threshold_3d_with_init_layer(
         #     q_trajectory=q_trajectory,
@@ -272,7 +275,6 @@ class MailerBoxTask(Task):
             print(f"[INFO] The box has been closed!")
         else:
             print(f"[INFO] The box has been opened!")
-
 
 
 

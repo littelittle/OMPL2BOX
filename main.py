@@ -36,25 +36,33 @@ def main():
         "--nogui", dest="gui", action="store_false", help="Run in DIRECT mode"
     )
     parser.add_argument(
-        "--robot",
-        choices=["kuka", "panda"],
-        default="panda",
-        help="Robot model to use",
+        "--method", choices=['Sampling', "Iteration"], default=None, help="refinement method to use",
+    )
+    parser.add_argument(
+        "--scaling", type=float, default=None, help="sacle of the box"
+    )
+    parser.add_argument(
+        "--box_pos", type=list, default=None, help="postion of the box"
+    )
+    parser.add_argument(
+        "--box_yaw", type=float, default=None, help="degree of the box"
     )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     mode = args.mode or cfg.get("mode", "FlapBoxTask")
-    gui = cfg.get("gui", True) if args.gui is None else args.gui
-    robot_name = args.robot or cfg.get("robot", "panda")
-    cfg["robot"] = robot_name
+    gui = args.gui if args.gui is not None else cfg.get("gui", True) 
+    cfg["method"] = args.method or cfg.get("method", "Iteration")
+    cfg["scaling"] = args.scaling or cfg.get("scaling", 1.0)
+    cfg["box_pos"] = args.box_pos or cfg.get("box_pos", [0.6, 0.1, 0.4])
+    cfg["box_yaw"] = args.box_yaw or cfg.get("box_yaw", 0.0)
+
     sim = make_sim(gui=gui, physics=physics_from_config(cfg), load_ground_plane=True)
 
     task_map = {
         "FlapBoxTask": FlapBoxTask,
         "MailerBoxTask": MailerBoxTask,
     }
-
     task_cls = task_map.get(mode)
     if task_cls is None:
         raise NotImplementedError(f"{mode} not supported")
@@ -62,10 +70,10 @@ def main():
     task.setup_scene()
     task.run()
 
-    print("Press Ctrl+C to quit the GUI window.")
-    while True:
-        p.stepSimulation(physicsClientId=sim.cid)
-        time.sleep(1.0 / 20.0)
+    # print("Press Ctrl+C to quit the GUI window.")
+    # while True:
+    #     p.stepSimulation(physicsClientId=sim.cid)
+    #     time.sleep(1.0 / 20.0)
 
 if __name__ == "__main__":
     main()
