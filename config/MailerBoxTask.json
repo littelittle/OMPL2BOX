@@ -4,8 +4,8 @@
   "gui": true,
   "box_pos": [0.6, 0.1, 0.4],
   "box_yaw": 0.0,
-  "closed": true,
-  "scaling": 1.0,
+  "box_closed": true,
+  "box_scaling": 1.0,
   "method": "Iteration",
-  "file_path": "assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf"
+  "box_file_path": "assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf"
 }

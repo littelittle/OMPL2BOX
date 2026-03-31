@@ -8,7 +8,7 @@ The canonical execution flow lives in `main.py` and currently does the following
 
 1. Parse CLI arguments.
 2. Load a JSON config file.
-3. Resolve runtime overrides for mode, GUI, planning method, box scaling, box position, and box yaw.
+3. Resolve runtime overrides for mode, GUI, planning method, box scaling, box position, box yaw, box asset path, and box open/closed state.
 4. Create a PyBullet simulation via `scene.make_sim(...)`.
 5. Select a task class from `tasks.FlapBoxTask` / `tasks.MailerBoxTask`.
 6. Call `task.setup_scene()`.
@@ -45,9 +45,11 @@ Currently supported CLI arguments in `main.py`:
 - `--mode`: `FlapBoxTask` or `MailerBoxTask`.
 - `--gui` / `--nogui`
 - `--method`: `Sampling` or `Iteration`
-- `--scaling`: float
+- `--box_scaling`: float
 - `--box_pos`: list-like override for mailer box position
 - `--box_yaw`: float
+- `--box_file_path`: path to the mailer box URDF
+- `--box_closed` / `--box_open`
 
 Behavior that matters when reading or editing the code:
 
@@ -69,7 +71,7 @@ Relevant config fields used by current task code:
 
 - Shared/runtime: `mode`, `gui`
 - Flap box task: `robot`, `foldable_box_pos`, `foldable_box_orn`, `pedestal_h`
-- Mailer box task: `robot`, `box_pos`, `box_yaw`, `closed`, `scaling`, `method`, `file_path`
+- Mailer box task: `robot`, `box_pos`, `box_yaw`, `box_closed`, `box_scaling`, `method`, `box_file_path`
 - Optional physics block: `pybullet.gravity`, `pybullet.time_step`, `pybullet.num_sub_steps`, `pybullet.num_solver_iterations`
 
 4) Repository Structure

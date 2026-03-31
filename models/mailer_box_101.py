@@ -62,6 +62,7 @@ class MailerBox:
             globalScaling=self.scaling,
             physicsClientId=self.cid,
         )
+        print(f"[INFO]: MailerBox loads successfully from {self.file_path}")
         self.lid_id = self._get_lid_jointId()
         self.flap_id = self._get_flap_jointId()
 

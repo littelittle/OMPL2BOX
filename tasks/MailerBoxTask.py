@@ -20,16 +20,16 @@ class MailerBoxTask(Task):
         mailerbox_pos = np.array(self.config.get("box_pos", [0.6, 0.1, 0.4]), dtype=float)
         mailerbox_pos = mailerbox_pos.tolist() 
         mailerbox_yaw = self.config.get('box_yaw', 0.0)
-        self.closed = self.config.get("closed", False)
-        self.scaling = self.config.get("scaling", 1)
+        self.box_closed = self.config.get("box_closed", False)
+        self.box_scaling = self.config.get("box_scaling", 1)
         self.method = self.config.get("method", "Iteration")
 
         # create the pedestal
         create_pedestal(self.sim.cid, mailerbox_pos[:2], size_xy=(0.2, 0.2), height=mailerbox_pos[2]-0.05)
 
         # set up the mailerbox
-        file_path = self.config.get("file_path","assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf")
-        self.mailerbox = MailerBox(self.sim.cid, file_path=file_path, scaling=self.scaling, pos=mailerbox_pos, yaw=mailerbox_yaw, closed=self.closed)
+        file_path = self.config.get("box_file_path","assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf")
+        self.mailerbox = MailerBox(self.sim.cid, file_path=file_path, scaling=self.box_scaling, pos=mailerbox_pos, yaw=mailerbox_yaw, closed=self.box_closed)
         box_id = self.mailerbox.body_id
 
         # set up the robot 
@@ -46,7 +46,7 @@ class MailerBoxTask(Task):
         planner.open_gripper()
 
         # Configure the order of the array
-        if self.closed:
+        if self.box_closed:
             start_angle_tuple = (90, 90)
             goal_angle_tuple = (-90, -90)
         else:
@@ -55,7 +55,7 @@ class MailerBoxTask(Task):
 
         # Searching for potential fesible task space!
         start_yaw = np.deg2rad(90)
-        is_feasible_bound = partial(is_feasible, mailerbox=mailerbox, planner=planner, former_yaw=start_yaw, closed=self.closed) 
+        is_feasible_bound = partial(is_feasible, mailerbox=mailerbox, planner=planner, former_yaw=start_yaw, closed=self.box_closed) 
         degree_tuple_list, q_list = search_traj(start_angle_tuple, goal_angle_tuple, is_feasible_bound, num_sample=10)
 
         # TODO: Optimize the way q_trajectory and q_source_trajectory is recorded
@@ -235,7 +235,7 @@ class MailerBoxTask(Task):
         # plot_feasible_yaw_evolution_greedy(
         #     q_trajectory,
         #     chosen_yaw_trajectory=candidate_yaw_trajectory,
-        #     save_path=f"exp/03_28/{self.closed}closed_{self.scaling}_iter_mix_rand.png",
+        #     save_path=f"exp/03_28/{self.box_closed}closed_{self.scaling}_iter_mix_rand.png",
         #     show=True,
         #     use_degree=True,
         #     angular_indices=range(7),   # Panda arm joints
@@ -247,7 +247,7 @@ class MailerBoxTask(Task):
         #     q_source_trajectory=q_source_trajectory,
         #     planned_dict=planned_dict,
         #     distance_threshold=0.9,
-        #     save_path=f"exp/NEW/{self.closed}closed_{self.scaling}_threshold_3d_with_init.png",
+        #     save_path=f"exp/NEW/{self.box_closed}closed_{self.scaling}_threshold_3d_with_init.png",
         #     show=True,
         #     use_degree=True,
         #     z_mode="refine_iter",
@@ -261,7 +261,7 @@ class MailerBoxTask(Task):
         #     planned_dict=planned_dict,
         #     distance_threshold=1.11,
         #     focus_refine_iter="last",   # 或者 0, 1, 2 ...
-        #     save_path=f"exp/paper/{self.closed}closed_{self.scaling}_3d_with_layer_views_max_classic.png",
+        #     save_path=f"exp/paper/{self.box_closed}closed_{self.scaling}_3d_with_layer_views_max_classic.png",
         #     show=True,
         #     use_degree=True,
         #     draw_failed_exec_edges=False,
@@ -271,7 +271,7 @@ class MailerBoxTask(Task):
 
 
         # Ending...
-        if self.closed==False:
+        if self.box_closed==False:
             print(f"[INFO] The box has been closed!")
         else:
             print(f"[INFO] The box has been opened!")

@@ -36,10 +36,10 @@ def main():
         "--nogui", dest="gui", action="store_false", help="Run in DIRECT mode"
     )
     parser.add_argument(
-        "--method", choices=['Sampling', "Iteration"], default=None, help="refinement method to use",
+        "--method", choices=['Sampling', "Iteration"], default=None, help="refinement method to use"
     )
     parser.add_argument(
-        "--scaling", type=float, default=None, help="sacle of the box"
+        "--box_scaling", type=float, default=None, help="sacle of the box"
     )
     parser.add_argument(
         "--box_pos", type=list, default=None, help="postion of the box"
@@ -47,15 +47,26 @@ def main():
     parser.add_argument(
         "--box_yaw", type=float, default=None, help="degree of the box"
     )
+    parser.add_argument(
+        "--box_file_path", type=str, default=None, help="the file path of the loaded box"
+    )
+    parser.add_argument(
+        "--box_closed", action="store_true", help="Set box as closed"
+    )
+    parser.add_argument(
+        "--box_open", dest="box_closed", action="store_false", help="Set box as open"
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
     mode = args.mode or cfg.get("mode", "FlapBoxTask")
     gui = args.gui if args.gui is not None else cfg.get("gui", True) 
     cfg["method"] = args.method or cfg.get("method", "Iteration")
-    cfg["scaling"] = args.scaling or cfg.get("scaling", 1.0)
+    cfg["box_scaling"] = args.box_scaling or cfg.get("box_scaling", 1.0)
     cfg["box_pos"] = args.box_pos or cfg.get("box_pos", [0.6, 0.1, 0.4])
     cfg["box_yaw"] = args.box_yaw or cfg.get("box_yaw", 0.0)
+    cfg["box_file_path"] = args.box_file_path or cfg.get('box_file_path', "assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf")
+    cfg["box_closed"] = args.box_closed if args.box_closed is not None else cfg.get('box_closed', True)    
 
     sim = make_sim(gui=gui, physics=physics_from_config(cfg), load_ground_plane=True)
 
