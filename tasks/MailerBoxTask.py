@@ -36,10 +36,9 @@ class MailerBoxTask(Task):
         self.planner = PandaGripperPlanner(oracle_function=self.mailerbox.get_flap_keypoint_pose, cid=self.sim.cid, box_id=box_id, plane_id=self.sim.plane_id)
         # planner.box_attached = 10 # # TODO: This is a remnant of ompl. Investigate whether this tag actually has any effect.
 
-    def run(self, ):
+    def _compute_plan_quality(self):
         planner = self.planner
         mailerbox = self.mailerbox
-        candidate_yaw_trajectory = []
 
         # Reaching out to the flap grasp point!
         # NOTE: We'll skip this process for now and select the optimal grasping pose after the planning is complete.
@@ -57,6 +56,14 @@ class MailerBoxTask(Task):
         start_yaw = np.deg2rad(90)
         is_feasible_bound = partial(is_feasible, mailerbox=mailerbox, planner=planner, former_yaw=start_yaw, closed=self.box_closed) 
         degree_tuple_list, q_list = search_traj(start_angle_tuple, goal_angle_tuple, is_feasible_bound, num_sample=10)
+        if degree_tuple_list is None:
+            return {
+                "success": False,
+                "total_cost": None,
+                "max_edge_cost": None,
+                "planned_dict": None,
+                "path": None,
+            }
 
         # TODO: Optimize the way q_trajectory and q_source_trajectory is recorded
         q_trajectory = [[] for _ in range(len(degree_tuple_list))]
@@ -140,6 +147,14 @@ class MailerBoxTask(Task):
                             p.stepSimulation()
                         break
         planned_dict = dp_plan_yaw_path(feasible_by_step=q_trajectory, joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]))
+        if planned_dict is None:
+            return {
+                "success": False,
+                "total_cost": None,
+                "max_edge_cost": None,
+                "planned_dict": None,
+                "path": None,
+            }
 
 
         # Evaluate the feasible q_goal!
@@ -186,6 +201,14 @@ class MailerBoxTask(Task):
                 pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
                 planner.sample_redundant(i, q_trajectory, temp_q_rest_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=q_source_trajectory, source_tag={"kind":"refine", "iter":j+1, "from_edge":max_index})
             planned_dict = dp_plan_yaw_path(feasible_by_step=q_trajectory, joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]))
+            if planned_dict is None:
+                return {
+                    "success": False,
+                    "total_cost": None,
+                    "max_edge_cost": None,
+                    "planned_dict": None,
+                    "path": None,
+                }
             
 
         path = planned_dict['path'] 
@@ -206,9 +229,25 @@ class MailerBoxTask(Task):
         #     pickle.dump(q_list, f)
         # return 
 
+        return {
+            "success": True,
+            "total_cost": float(planned_dict["total_cost"]),
+            "max_edge_cost": float(max_edge_cost),
+            "planned_dict": planned_dict,
+            "path": path,
+        }
+
+    def run(self, execute=True):
+        planner = self.planner
+        plan_metrics = self._compute_plan_quality()
+        if not plan_metrics["success"]:
+            raise RuntimeError("Failed to compute a feasible MailerBoxTask plan.")
+
+        path = plan_metrics["path"]
+        candidate_yaw_trajectory = []
+
         # Start excuting...
-        Excute = True
-        if Excute:
+        if execute:
             # move to grasp...
             grasp_q_goal = path[0][0]
             ompl_path = planner.plan_ompl(planner.get_current_config(), grasp_q_goal, num_waypoints=200, optimal=True)
@@ -276,5 +315,7 @@ class MailerBoxTask(Task):
         else:
             print(f"[INFO] The box has been opened!")
 
+    def compute_quality_metrics(self):
+        return self._compute_plan_quality()
 
 
