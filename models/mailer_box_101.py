@@ -57,7 +57,7 @@ class MailerBox:
             fileName=self.file_path,
             useFixedBase=True,
             basePosition=pos,
-            baseOrientation=p.getQuaternionFromEuler([0, 0, math.pi-np.deg2rad(30)]), # +0.35
+            baseOrientation=p.getQuaternionFromEuler([0, 0, math.pi-np.deg2rad(45)]), # +0.35
             globalScaling=self.scaling,
             physicsClientId=self.cid,
         )

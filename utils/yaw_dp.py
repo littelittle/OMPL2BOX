@@ -8,6 +8,7 @@ from typing import List, Sequence, Tuple, Optional, Dict, Any
 QType = Sequence[float]
 State = Tuple[QType, float]   # (q, yaw)
 Layer = Sequence[State]
+
 Q_RESET_SEEDS = {
     # 1) home
     "home": [0.0, -0.6, 0.0, -2.4, 0.0, 1.9, 0.8],
@@ -34,6 +35,20 @@ Q_RESET_SEEDS = {
     "wrist_flip_b": [-0.10, -0.75, -0.15, -2.30, -0.20, 2.40, 1.80],
 }
 
+q_min = [-2.9671, -1.8326, -2.9671, -3.1416, -2.9671, -0.0873, -2.9671]
+q_max = [2.9671,  1.8326,  2.9671, 0.0, 2.9671, 3.8223, 2.9671]
+
+def uniform_q_sampling(num: int):
+    q_min_np = np.asarray(q_min)
+    q_max_np = np.asarray(q_max)
+
+    rand = np.random.rand(num, len(q_min_np))
+
+    samples = q_min_np + rand * (q_max_np - q_min_np)
+
+    return samples.tolist()
+
+
 def _weighted_l2_distance(
     q1: np.ndarray,
     q2: np.ndarray,
@@ -48,7 +63,7 @@ def _weighted_l2_distance(
 def dp_plan_yaw_path(
     feasible_by_step: Sequence[Layer],
     start_q: Optional[QType] = None,
-    jump_threshold: float = 5000.0,
+    jump_threshold: float = 10.0,
     hard_threshold: bool = True,
     big_penalty: float = 1e6,
     joint_weights: Optional[QType] = None,

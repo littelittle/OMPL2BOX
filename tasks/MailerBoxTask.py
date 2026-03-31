@@ -9,9 +9,10 @@ from models import MailerBox
 from planners import PandaGripperPlanner
 from test_env import is_feasible, search_traj
 from scene import create_pedestal
-from utils.yaw_dp import dp_plan_yaw_path, Q_RESET_SEEDS
+from utils.yaw_dp import dp_plan_yaw_path, Q_RESET_SEEDS, uniform_q_sampling
 from utils.path import interpolate_joint_line
 from utils.drawer import plot_feasible_yaw_evolution_greedy, plot_threshold_3d_with_init_layer, plot_threshold_3d_with_layer_views
+
 
 rng = np.random.default_rng(42)
 
@@ -73,15 +74,33 @@ class MailerBoxTask(Task):
 
         # Initialize the q_reset fed in to the IK solver
         # NOTE: for the adaptive iteration method, q_reset_list contains only ['home'], while pure sampling based method contains all possible q_reset 
-        q_reset_list = [
-            Q_RESET_SEEDS["home"],
-            # [0.21122026522160325, -0.44400245603577937, -0.23161109603481303, -2.743793599968008, -1.0309511129162083, 3.7166966782496167, -1.110594041641138], # this is the refined q_reset!
-            # Q_RESET_SEEDS["left_relaxed"],
-            # Q_RESET_SEEDS["right_relaxed"],
-            # Q_RESET_SEEDS["left_elbow_out"],
-            # Q_RESET_SEEDS["right_elbow_out"],
-            # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
-        ]
+        METHOD = "AdaptiveIter" # or "PureSampling"
+        METHOD = "PureSampling"
+        if METHOD == "AdaptiveIter": 
+            q_reset_list = [
+                Q_RESET_SEEDS["home"],
+                # [0.21122026522160325, -0.44400245603577937, -0.23161109603481303, -2.743793599968008, -1.0309511129162083, 3.7166966782496167, -1.110594041641138], # this is the refined q_reset!
+                # Q_RESET_SEEDS["left_relaxed"],
+                # Q_RESET_SEEDS["right_relaxed"],
+                Q_RESET_SEEDS["left_elbow_out"],
+                Q_RESET_SEEDS["right_elbow_out"],
+                # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
+            ]
+            MaxIteration = 2                           # tweak this param by mode
+
+        elif METHOD == "PureSampling":
+            q_reset_list = [
+                Q_RESET_SEEDS["home"],
+                # [0.21122026522160325, -0.44400245603577937, -0.23161109603481303, -2.743793599968008, -1.0309511129162083, 3.7166966782496167, -1.110594041641138], # this is the refined q_reset!
+                # Q_RESET_SEEDS["left_relaxed"],
+                # Q_RESET_SEEDS["right_relaxed"],
+                Q_RESET_SEEDS["left_elbow_out"],
+                Q_RESET_SEEDS["right_elbow_out"],
+                # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
+            ]
+            q_reset_list += uniform_q_sampling(10)
+            MaxIteration = 0
+
 
         # Following the task space constraint to execute!
         for i, degree_tuple in enumerate(degree_tuple_list):
@@ -128,7 +147,6 @@ class MailerBoxTask(Task):
 
 
         # Evaluate the feasible q_goal!
-        MaxIteration = 5                      # tweak this param by mode
         sorted_idx = 0
         for j in range(MaxIteration):
             path = planned_dict['path']
@@ -137,24 +155,33 @@ class MailerBoxTask(Task):
             
             # Add some randomness ...
             sorted_idx += 1
-            if sorted_idx > 0:
+            if sorted_idx > 2:
                 sorted_idx = 0
             
-            print("the leaf local structure is:")
-            print(selected_index, selected_index+1)
+            # print("the leaf local structure is:")
+            # print(selected_index, selected_index+1)
 
             # NOTE: Below is legacy, but worth another try
             # q1_refined, q2_refined = planner.qs_refinement(path[max_index][0], path[max_index+1][0])
             
-            new_q_rest = [path[selected_index][0].tolist(), path[selected_index+1][0].tolist()] # Bisection
+            new_q_rest_list = [path[selected_index][0].tolist(), path[selected_index+1][0].tolist()] # Bisection
             print(f"Iter times: {j}, Max edge cost: {max_edge_cost}, Total cost: {planned_dict['total_cost']}, worst_idx: {np.argmax(planned_dict['path_costs'])}, selected_index: {selected_index}")
             if max_edge_cost < 0: # set this threashold accordingly
                 break
 
             # Refining...
             for i, degree_tuple in enumerate(degree_tuple_list):
+                # new_q_rest = [new_q_rest_list[1]] if i <= selected_index else [new_q_rest_list[0]]
+                if abs(i-selected_index) < 5:
+                    temp_q_rest_list = new_q_rest_list.copy()
+                else:
+                    continue
+                # if i > 0:
+                #     temp_q_rest_list.append(path[i-1][0].tolist())
+                # if i < len(degree_tuple)-1:
+                #     temp_q_rest_list.append(path[i+1][0].tolist())
                 pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
-                planner.sample_redundant(i, q_trajectory, new_q_rest, yaws, normal, horizontal, pos, current_config, q_source_trajectory=q_source_trajectory, source_tag={"kind":"refine", "iter":j+1, "from_edge":max_index})
+                planner.sample_redundant(i, q_trajectory, temp_q_rest_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=q_source_trajectory, source_tag={"kind":"refine", "iter":j+1, "from_edge":max_index})
             planned_dict = dp_plan_yaw_path(feasible_by_step=q_trajectory, joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]))
             
 
@@ -166,7 +193,7 @@ class MailerBoxTask(Task):
         max_index, max_edge_cost = max(enumerate(planned_dict["path_costs"]), key=lambda x: x[1])
         print(f"Iter times: {MaxIteration}, Max edge cost: {max_edge_cost}, Total cost: {planned_dict['total_cost']}, worst_idx: {np.argmax(planned_dict['path_costs'])}")
         # for step, ((q_goal, yaw), src) in enumerate(zip(path, path_sources)):
-        #     print(f"[path step {step}] yaw={yaw:.4f}")
+        #     print(f"[path step {step}] yaw={yaw:.4f} q_goal={q_goal}")
         #     print(f"  source = {src}")
 
         # NOTE: temp, simply for saving the trajectory

@@ -265,7 +265,7 @@ class GenericPlanner:
         self.set_robot_config(base_rest)
 
         for t in range(max_trials):
-            if t == 1:
+            if t == 0:
                 rest = base_rest
             else:
                 # add some noise to the rest pose 
@@ -310,13 +310,12 @@ class GenericPlanner:
         q_goal_list = []
         q_source_list = []
         current_q_reset_list = q_reset_list.copy()
-        if index > 0:
-            former_q_list = [q[0] for q in q_trajectory[index-1]]
-            # import ipdb; ipdb.set_trace()
-            mean_former_q = np.mean(former_q_list, axis=0).tolist()
-            q_reset = mean_former_q
-            current_q_reset_list.append(mean_former_q)
-
+        # if index > 0 :
+        #     former_q_list = [q[0] for q in q_trajectory[index-1]]
+        #     # import ipdb; ipdb.set_trace()
+        #     mean_former_q = np.mean(former_q_list, axis=0).tolist()
+        #     if former_q_list != []:
+        #         current_q_reset_list.append(mean_former_q)
         for reset_idx, q_reset in enumerate(current_q_reset_list):
             
             for yaw in yaws:

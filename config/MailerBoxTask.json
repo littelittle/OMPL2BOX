@@ -3,7 +3,7 @@
   "robot": "panda",
   "gui": true,
   "mailerbox_pos": [0.6, 0.1, 0.4],
-  "closed": false,
+  "closed": true,
   "scaling": 1.0,
   "file_path": "assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf"
 }
