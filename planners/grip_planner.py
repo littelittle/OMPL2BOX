@@ -58,7 +58,7 @@ class PandaGripperPlanner(GenericPlanner):
         self.lower_limits: List[float] = []
         self.upper_limits: List[float] = []
         self.rest_pose: List[float] = []
-        self.box_attached: int = -2
+        self.box_attached: int = -1
         self.ee_link_index: int = -1
         self.box_constraint_id: Optional[int] = None
         self.gripper_open_width: float = 0.08

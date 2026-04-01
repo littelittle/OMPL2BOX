@@ -56,6 +56,8 @@ class MailerBoxTask(Task):
         start_yaw = np.deg2rad(90)
         is_feasible_bound = partial(is_feasible, mailerbox=mailerbox, planner=planner, former_yaw=start_yaw, closed=self.box_closed) 
         degree_tuple_list, q_list = search_traj(start_angle_tuple, goal_angle_tuple, is_feasible_bound, num_sample=10)
+        degree_tuple_list = [start_angle_tuple] + degree_tuple_list
+        print(degree_tuple_list)
         if degree_tuple_list is None:
             return {
                 "success": False,
@@ -90,7 +92,7 @@ class MailerBoxTask(Task):
                 Q_RESET_SEEDS["right_elbow_out"],
                 # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
             ]
-            MaxIteration = 5                           # tweak this param by mode
+            MaxIteration = 1                          # tweak this param by mode
 
         elif self.method == "Sampling":
             q_reset_list = [
@@ -188,16 +190,24 @@ class MailerBoxTask(Task):
             if max_edge_cost < 0: # set this threashold accordingly
                 break
             # Refining...
+            refine_yaw_offset = np.deg2rad(20)
+
             for i, degree_tuple in enumerate(degree_tuple_list):
                 # new_q_rest = [new_q_rest_list[1]] if i <= selected_index else [new_q_rest_list[0]]
                 if abs(i-selected_index) < 5:
                     temp_q_rest_list = new_q_rest_list.copy()
                 else:
                     continue
+
                 # if i > 0
                 #     temp_q_rest_list.append(path[i-1][0].tolist())
                 # if i < len(degree_tuple)-1:
                 #     temp_q_:rest_list.append(path[i+1][0].tolist())
+                old_yaw = path[i][1]
+                low_bound = min(refine_yaw_offset, old_yaw-np.rad2deg(30))
+                high_bound = min(refine_yaw_offset, np.rad2deg(150)-old_yaw)
+                yaws = np.linspace(low_bound, high_bound, 20).tolist()
+
                 pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
                 planner.sample_redundant(i, q_trajectory, temp_q_rest_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=q_source_trajectory, source_tag={"kind":"refine", "iter":j+1, "from_edge":max_index})
             planned_dict = dp_plan_yaw_path(feasible_by_step=q_trajectory, joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]))
@@ -249,16 +259,24 @@ class MailerBoxTask(Task):
         # Start excuting...
         if execute:
             # move to grasp...
+            # start_yaw = path[0][1]
+            # pos, normal, horizontal = self.mailerbox.get_flap_keypoint_pose()
+            # orn = planner._quat_from_normal_and_yaw(normal, start_yaw, horizontal, finger_axis_is_plus_y=False)
+            # grasp_q_goal = planner.solve_ik_collision_aware(pos, orn, collision=False, q_reset=path[0][0])
             grasp_q_goal = path[0][0]
-            ompl_path = planner.plan_ompl(planner.get_current_config(), grasp_q_goal, num_waypoints=200, optimal=True)
+
+
+            ompl_path = planner.plan_ompl(planner.get_current_config(), grasp_q_goal, num_waypoints=200, optimal=False)
             if ompl_path is None:
                 raise RuntimeError("path is none!")
             q_traj = []
             for i in range(ompl_path.getStateCount()):
                 s = ompl_path.getState(i)
                 q_traj.append([float(s[j]) for j in range(planner.ndof)])
+            # import ipdb; ipdb.set_trace()
             planner.execute_joint_trajectory_real(q_traj, dt=0.05, interpolate=False)
-            
+            planner.set_robot_config(grasp_q_goal)
+
             planner.close_gripper_to_width(target_width=0.0, force=1000)
 
             # open the flap/lid...

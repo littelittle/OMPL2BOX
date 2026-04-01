@@ -27,7 +27,7 @@ def physics_from_config(cfg: Dict[str, Any]) -> PhysicsConfig:
     gravity = tuple(pb.get("gravity", (0.0, 0.0, -9.81)))
     time_step = float(pb.get("time_step", 1.0 / 240.0))
     num_sub_steps = int(pb.get("num_sub_steps", 1))
-    num_solver_iterations = int(pb.get("num_solver_iterations", 75))
+    num_solver_iterations = int(pb.get("num_solver_iterations", 100))
 
     return PhysicsConfig(
         gravity=gravity,

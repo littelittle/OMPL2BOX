@@ -1,0 +1,14 @@
+name: box
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pip:
+      - pybullet
+      - numpy
+      - matplotlib
+      - ompl
+      - vamp
+      # Optional debugging helper used in several failure branches.
+      # - ipdb

@@ -1,0 +1,10 @@
+# Core runtime dependencies inferred from imports on the canonical main.py path.
+# Python 3.10+ is required by the codebase.
+pybullet
+numpy
+matplotlib
+ompl
+vamp
+
+# Optional debugging helper used in several failure branches.
+# ipdb

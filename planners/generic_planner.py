@@ -116,7 +116,7 @@ class GenericPlanner:
                 # import ipdb; ipdb.set_trace()
                 for box_link in range(-1, 4):
                     if box_link == self.box_attached:
-                        print("skipping collision check for attached flap ", box_link)
+                        # print("skipping collision check for attached flap ", box_link)
                         continue
                     pts2 = p.getClosestPoints(
                         bodyA=self.robot_id,
