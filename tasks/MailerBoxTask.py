@@ -72,7 +72,7 @@ class MailerBoxTask(Task):
         q_source_trajectory = [[] for _ in range(len(degree_tuple_list))]
 
         # Initialize the yaw candidates list
-        num_steps = 10
+        num_steps = 5
         max_offset = np.deg2rad(60)
         step = max_offset / float(max(1, num_steps))
         yaws = [np.deg2rad(90)] 
@@ -109,6 +109,8 @@ class MailerBoxTask(Task):
 
 
         # Following the task space constraint to execute!
+        import time
+        start_time = time.time()
         for i, degree_tuple in enumerate(degree_tuple_list):
 
             # Searching for feasible configuration!
@@ -157,7 +159,6 @@ class MailerBoxTask(Task):
                 "planned_dict": None,
                 "path": None,
             }
-
 
         # Evaluate the feasible q_goal!
         sorted_idx = 0
@@ -219,8 +220,8 @@ class MailerBoxTask(Task):
                     "planned_dict": None,
                     "path": None,
                 }
-            
-
+        time_total = time.time()-start_time
+        print(f"Total time: {time_total}")    
         path = planned_dict['path'] 
         path_sources = [
             q_source_trajectory[step][cand_idx]
