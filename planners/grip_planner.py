@@ -15,7 +15,7 @@ import vamp
 
 import numpy as np
 
-from utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross
+from utils.vector import _normalize, quat_from_normal_and_axis, quat_from_normal_and_yaw
 from utils.path import interpolate_joint_line, draw_point, omplpath2traj
 from utils.pointcloud import pts2obj
 from utils.contactframe import ContactFrame
@@ -80,7 +80,7 @@ class PandaGripperPlanner(GenericPlanner):
         # Slightly tucked home pose to keep gripper over the table.
         self.home_config = [0.0, -0.6, 0.0, -2.4, 0.0, 1.9, 0.8]
         if len(self.home_config) != self.ndof:
-            self.home_config = [0.0] * self.ndof
+            raise RuntimeError("the size of home_config is different from the joint_indices")
         self.rest_pose = list(self.home_config)
 
         self.control_dt = 1.0 / 240.0
@@ -165,7 +165,6 @@ class PandaGripperPlanner(GenericPlanner):
 
             if link_name == "panda_grasptarget":
                 print("panda_grasptarget_hand found!")
-                # import ipdb; ipdb.set_trace()
                 self.ee_link_index = j
 
         # Fallback: if we didn't find explicit left/right labels, just take the first two finger joints.
@@ -781,7 +780,7 @@ class PandaGripperPlanner(GenericPlanner):
             yaws = [yaw] + yaws
 
         for i, yaw in enumerate(yaws):
-            orn = self._quat_from_normal_and_yaw(normal_world, yaw, finger_axis_is_plus_y=approach_flip)
+            orn = quat_from_normal_and_yaw(normal_world, yaw, finger_axis_is_plus_y=approach_flip)
 
             # Select an end-effector pose that is reachable within the configuration space and collision-free.
             q_goal = self.solve_ik_collision_aware(pos, orn, collision=ik_collision)

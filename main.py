@@ -79,7 +79,7 @@ def main():
         raise NotImplementedError(f"{mode} not supported")
     task = task_cls(cfg, sim)
     task.setup_scene()
-    task.run()
+    task.run(execute=True)
 
     # print("Press Ctrl+C to quit the GUI window.")
     # while True:

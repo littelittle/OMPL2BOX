@@ -1,4 +1,5 @@
 import math
+import time
 import random
 import numpy as np
 import pybullet as p
@@ -6,35 +7,40 @@ from functools import partial
 
 from tasks import Task
 from models import MailerBox
-from planners import PandaGripperPlanner
+from planners import PandaGripperPlanner, TaskConstraintPlanner
 from test_env import is_feasible, search_traj
 from scene import create_pedestal
 from utils.yaw_dp import dp_plan_yaw_path, Q_RESET_SEEDS, uniform_q_sampling
 from utils.path import interpolate_joint_line
+from utils.vector import quat_from_normal_and_yaw
 from utils.drawer import plot_feasible_yaw_evolution_greedy, plot_threshold_3d_with_init_layer, plot_threshold_3d_with_layer_views
 
 
 
 class MailerBoxTask(Task):
-    def setup_scene(self, ):
-        mailerbox_pos = np.array(self.config.get("box_pos", [0.6, 0.1, 0.4]), dtype=float)
-        mailerbox_pos = mailerbox_pos.tolist() 
-        mailerbox_yaw = self.config.get('box_yaw', 0.0)
+    def __init__(self, config, sim):
+        super().__init__(config, sim)
         self.box_closed = self.config.get("box_closed", False)
         self.box_scaling = self.config.get("box_scaling", 1)
         self.method = self.config.get("method", "Iteration")
 
-        # create the pedestal
-        create_pedestal(self.sim.cid, mailerbox_pos[:2], size_xy=(0.2, 0.2), height=mailerbox_pos[2]-0.05)
+    def setup_scene(self, ):
+        # Load mailerbox pose from self.config
+        mailerbox_pos = list(self.config.get("box_pos", [0.6, 0.1, 0.4]))
+        mailerbox_yaw = self.config.get('box_yaw', 0.0)
 
-        # set up the mailerbox
+        # Create the pedestal
+        create_pedestal(self.sim.cid, mailerbox_pos[:2], size_xy=(0.2, 0.2), height=mailerbox_pos[2]-0.05) # NOTE: -0.05 is only empirical
+
+        # Set up the mailerbox
         file_path = self.config.get("box_file_path","assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf")
         self.mailerbox = MailerBox(self.sim.cid, file_path=file_path, scaling=self.box_scaling, pos=mailerbox_pos, yaw=mailerbox_yaw, closed=self.box_closed)
         box_id = self.mailerbox.body_id
 
-        # set up the robot 
+        # Set up the robot 
         self.planner = PandaGripperPlanner(oracle_function=self.mailerbox.get_flap_keypoint_pose, cid=self.sim.cid, box_id=box_id, plane_id=self.sim.plane_id)
-        # planner.box_attached = 10 # # TODO: This is a remnant of ompl. Investigate whether this tag actually has any effect.
+        self.tc_planner = TaskConstraintPlanner(robot_planner=self.planner)
+        # planner.box_attached = 10 # # TODO: This is a remnant of ompl. Investigate whether this tag actually has any potential effect.
 
     def _compute_plan_quality(self):
         planner = self.planner
@@ -109,7 +115,6 @@ class MailerBoxTask(Task):
 
 
         # Following the task space constraint to execute!
-        import time
         start_time = time.time()
         for i, degree_tuple in enumerate(degree_tuple_list):
 
@@ -118,7 +123,7 @@ class MailerBoxTask(Task):
             current_config = planner.get_current_config()
 
             # TODO: Optimize the params passing to planner.sample_redundant()
-            planner.sample_redundant(i, q_trajectory, q_reset_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=q_source_trajectory, source_tag={"kind":"init","step":i})
+            self.tc_planner.sample_redundant(i, q_trajectory, q_reset_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=q_source_trajectory, source_tag={"kind":"init","step":i})
 
             if len(q_trajectory[i]) == 0:
                 q_goal = None
@@ -136,7 +141,7 @@ class MailerBoxTask(Task):
 
                 print("try null space search....")
                 for yaw in yaws:
-                    orn = planner._quat_from_normal_and_yaw(normal, yaw, finger_axis_is_plus_y=False)
+                    orn = quat_from_normal_and_yaw(normal, yaw, finger_axis_is_plus_y=False)
                     q_goal = planner.solve_ik_collision_aware(pos, orn, collision=False, max_trials=1, reset=True)
                     if q_goal:
                         while True:
@@ -210,7 +215,7 @@ class MailerBoxTask(Task):
                 yaws = np.linspace(low_bound, high_bound, 20).tolist()
 
                 pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
-                planner.sample_redundant(i, q_trajectory, temp_q_rest_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=q_source_trajectory, source_tag={"kind":"refine", "iter":j+1, "from_edge":max_index})
+                self.tc_planner.sample_redundant(i, q_trajectory, temp_q_rest_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=q_source_trajectory, source_tag={"kind":"refine", "iter":j+1, "from_edge":max_index})
             planned_dict = dp_plan_yaw_path(feasible_by_step=q_trajectory, joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]))
             if planned_dict is None:
                 return {
@@ -262,7 +267,7 @@ class MailerBoxTask(Task):
             # move to grasp...
             # start_yaw = path[0][1]
             # pos, normal, horizontal = self.mailerbox.get_flap_keypoint_pose()
-            # orn = planner._quat_from_normal_and_yaw(normal, start_yaw, horizontal, finger_axis_is_plus_y=False)
+            # orn = quat_from_normal_and_yaw(normal, start_yaw, horizontal, finger_axis_is_plus_y=False)
             # grasp_q_goal = planner.solve_ik_collision_aware(pos, orn, collision=False, q_reset=path[0][0])
             grasp_q_goal = path[0][0]
 

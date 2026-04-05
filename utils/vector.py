@@ -101,3 +101,32 @@ def quat_from_normal_and_axis(normal_world, axis_world, downward: bool = False):
         [x[2], y[2], z[2]],
     ]
     return _mat_to_quat(R)
+
+
+def quat_from_normal_and_yaw(
+    normal_world,
+    yaw: float,
+    horizontal, 
+    finger_axis_is_plus_y: bool = True,  # True: +Y 对齐 normal；False: -Y 对齐 normal
+    ):
+    n = _normalize(normal_world)
+
+    # 让 EE 的 y 轴对齐 normal（或反向）
+    y = [n[0], n[1], n[2]] if finger_axis_is_plus_y else [-n[0], -n[1], -n[2]]
+
+    # 根据horizontal，构造正交基
+    x0 = _normalize(horizontal)
+    z0 = _normalize(_cross(x0, y))  # x × y = z
+
+    # 绕 y（也就是 normal）旋转 yaw：在 x-z 平面里转
+    c, s = math.cos(yaw), math.sin(yaw)
+    x = [x0[i] * c + z0[i] * s for i in range(3)]
+    z = [-x0[i] * s + z0[i] * c for i in range(3)]
+
+    # 列向量 [x, y, z]
+    R = [
+        [x[0], y[0], z[0]],
+        [x[1], y[1], z[1]],
+        [x[2], y[2], z[2]],
+    ]
+    return _mat_to_quat(R)

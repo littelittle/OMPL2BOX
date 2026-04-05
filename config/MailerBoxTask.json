@@ -2,7 +2,7 @@
   "mode": "MailerBoxTask",
   "robot": "panda",
   "gui": true,
-  "box_pos": [0.6, 0.1, 0.4],
+  "box_pos": [0.6, 0.1, 0.35],
   "box_yaw": 0.0,
   "box_closed": true,
   "box_scaling": 1.0,

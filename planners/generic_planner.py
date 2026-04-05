@@ -6,7 +6,7 @@ from typing import Iterable, List, Optional
 import pybullet as p
 import numpy as np
 
-from utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross
+from utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross, quat_from_normal_and_yaw
 
 class GenericPlanner:
     """
@@ -235,6 +235,7 @@ class GenericPlanner:
     horizontal, 
     finger_axis_is_plus_y: bool = True,  # True: +Y 对齐 normal；False: -Y 对齐 normal
     ):
+        raise RuntimeError("quat_from_normal_and_yaw has moved to utils/vector.py")
         n = _normalize(normal_world)
 
         # 让 EE 的 y 轴对齐 normal（或反向）
@@ -307,6 +308,7 @@ class GenericPlanner:
         return None 
 
     def sample_redundant(self, index, q_trajectory, q_reset_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=None, source_tag=None, finger_axis_is_plus_y=False):
+        raise RuntimeError("This method has been deprecated, and moved to TaskConstraintPlanner")
         q_goal_list = []
         q_source_list = []
         current_q_reset_list = q_reset_list.copy()
@@ -319,10 +321,9 @@ class GenericPlanner:
         for reset_idx, q_reset in enumerate(current_q_reset_list):
             
             for yaw in yaws:
-                orn = self._quat_from_normal_and_yaw(normal, yaw, horizontal, finger_axis_is_plus_y=finger_axis_is_plus_y)
+                orn = quat_from_normal_and_yaw(normal, yaw, horizontal, finger_axis_is_plus_y=finger_axis_is_plus_y)
                 self.set_robot_config(current_config)
                 q_goal = self.solve_ik_collision_aware(pos, orn, collision=False, max_trials=1, reset=False, q_reset=q_reset)
-                # q_goal2 = self.solve_ik_collision_aware(pos, orn, collision=False, max_trials=1, reset=False, q_reset=q_trajectory[index-1][random.randint(0, len(q_trajectory[index-1])-1)][0] if index>0 else q_reset)
                 self.set_robot_config(current_config)
                 if q_goal is not None:
                     q_goal_list.append((q_goal, yaw))
@@ -333,8 +334,6 @@ class GenericPlanner:
                             "q_reset": np.asarray(q_reset, dtype=float).tolist(),
                             "yaw": float(yaw),
                         })
-                # if q_goal2 is not None:
-                #     q_goal_list.append((q_goal2, yaw))
         q_trajectory[index] += q_goal_list
         if q_source_trajectory is not None:
             q_source_trajectory[index] += q_source_list
@@ -359,6 +358,7 @@ class GenericPlanner:
         return J
 
     def qs_refinement(self, q1, q2):
+        raise RuntimeError("This method has been deprecated, and moved to TaskConstraintPlanner")
         q_backup = self.get_current_config()
 
         # get N1

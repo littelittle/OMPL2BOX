@@ -1,2 +1,3 @@
 from .suck_planner import KukaOmplPlanner
 from .grip_planner import PandaGripperPlanner
+from .task_constraint_planner import TaskConstraintPlanner

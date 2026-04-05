@@ -17,6 +17,7 @@ from scene import (
 )
 
 from utils.path import interpolate_joint_line
+from utils.vector import quat_from_normal_and_yaw
 from models import MailerBox
 
 from planners import PandaGripperPlanner
@@ -44,7 +45,7 @@ def is_feasible(lid_flap_tuple: tuple, mailerbox, planner, closed, former_yaw=No
         yaws = [2.0 * math.pi * k / float(max(1, num_samples)) for k in range(max(1, num_samples))]
     
     for i, yaw in enumerate(yaws):
-        orn = planner._quat_from_normal_and_yaw(normal, yaw, horizontal, finger_axis_is_plus_y=False)
+        orn = quat_from_normal_and_yaw(normal, yaw, horizontal, finger_axis_is_plus_y=False)
         q_goal = planner.solve_ik_collision_aware(pos, orn, collision=False, max_trials=1, q_reset=q_reset)
         if q_goal is not None:
             # print(yaw, i)
@@ -347,7 +348,7 @@ def main(closed=False):
         pos, normal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
         q_goal = None
         for yaw in yaws:
-            orn = planner._quat_from_normal_and_yaw(normal, yaw, finger_axis_is_plus_y=False)
+            orn = quat_from_normal_and_yaw(normal, yaw, finger_axis_is_plus_y=False)
             q_reset = [(planner.get_current_config()[i]+planner.rest_pose[i])/2 for i in range(len(planner.get_current_config()))]
             q_goal = planner.solve_ik_collision_aware(pos, orn, collision=False, max_trials=1, reset=True, q_reset=q_reset)
             if q_goal is not None:
@@ -361,7 +362,7 @@ def main(closed=False):
 
             print("try null space search....")
             for yaw in yaws:
-                orn = planner._quat_from_normal_and_yaw(normal, yaw, finger_axis_is_plus_y=False)
+                orn = quat_from_normal_and_yaw(normal, yaw, finger_axis_is_plus_y=False)
                 q_goal = planner.solve_ik_collision_aware(pos, orn, collision=False, max_trials=1, reset=True)
                 if q_goal:
                     while True:
