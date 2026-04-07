@@ -1,14 +1,17 @@
+import time
 import numpy as np
+from typing import List, Literal 
 
 from planners.grip_planner import PandaGripperPlanner
-from utils.vector import quat_from_normal_and_yaw
+from utils.vector import quat_from_normal_and_yaw, WaypointConstraint
+from utils.yaw_dp import dp_plan_yaw_path, Q_RESET_SEEDS, uniform_q_sampling
 
 class TaskConstraintPlanner:
     def __init__(self, robot_planner: PandaGripperPlanner):
         self.robot = robot_planner
 
-
     def sample_redundant(self, index, q_trajectory, q_reset_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=None, source_tag=None, finger_axis_is_plus_y=False):
+        raise NotImplementedError("Old method run is no longer supported. Use new method _sample_redundant instead.")
         q_goal_list = []
         q_source_list = []
         current_q_reset_list = q_reset_list.copy()
@@ -31,6 +34,25 @@ class TaskConstraintPlanner:
         if q_source_trajectory is not None:
             q_source_trajectory[index] += q_source_list
 
+    def _sample_redundant(self, constraint:WaypointConstraint, source_tag, finger_axis_is_plus_y=False):
+        q_goal_list = []
+        q_source_list = []
+        for reset_idx, q_reset in enumerate(self.q_reset_list):
+            for yaw in self.yaws:
+                orn = quat_from_normal_and_yaw(constraint.normal, yaw, constraint.horizontal, finger_axis_is_plus_y=finger_axis_is_plus_y)  
+                self.robot.set_robot_config(self.current_config)
+                q_goal = self.robot.solve_ik_collision_aware(constraint.pos, orn, collision=False, max_trials=1, reset=False, q_reset=q_reset)
+                self.robot.set_robot_config(self.current_config)
+                if q_goal is not None:
+                    q_goal_list.append((q_goal, yaw))
+                    q_source_list.append({
+                        "source_tag": source_tag,     # init or refine
+                        "reset_idx": reset_idx,       # which one is it in q_reset_list
+                        "q_reset": np.asarray(q_reset, dtype=float).tolist(),
+                        "yaw": float(yaw),
+                    })
+        self.q_trajectory[constraint.task_step] += q_goal_list
+        self.q_source_trajectory[constraint.task_step] += q_source_list
 
     def qs_refinement(self, q1, q2, step_size:float=0.01):
         q_backup = self.get_current_config()
@@ -56,6 +78,130 @@ class TaskConstraintPlanner:
         q2_delta = N2@q_delta
 
         print(np.linalg.norm(q_delta), np.linalg.norm(q1_delta), np.linalg.norm(q2_delta))
-        self.set_robot_config(q_backup)
+        self.robot.set_robot_config(q_backup)
 
         return (np.asarray(q1)+step_size*q1_delta).tolist(), (np.asarray(q2)-step_size*q2_delta).tolist()
+
+
+    def get_yaw_candidates(self, mid_degree=90, num_steps:int=5, max_offset=np.deg2rad(60)):
+
+        step = max_offset / float(max(1, num_steps))
+        yaws = [np.deg2rad(mid_degree)]
+        for k in range(1, num_steps + 1):
+            offset = k * step
+            yaws.append(yaws[0] + offset)
+            yaws.append(yaws[0] - offset)
+        return yaws
+
+
+    def solve_constraint_path(self, constraints: List[WaypointConstraint], method: Literal["Sampling", "Iteration"], ):
+        # First, open the gripper
+        self.robot.open_gripper()
+        
+        # Initialize the q_trajectory
+        self.q_trajectory = [[] for _ in range(len(constraints))]
+        self.q_source_trajectory = [[] for _ in range(len(constraints))]
+
+        # Initialize the yaw candidates list
+        self.yaws = self.get_yaw_candidates()
+
+        # Initialize the q_reset fed into the IK solver
+        if method == "Iteration": 
+            self.q_reset_list = [
+                Q_RESET_SEEDS["home"],
+                # [0.21122026522160325, -0.44400245603577937, -0.23161109603481303, -2.743793599968008, -1.0309511129162083, 3.7166966782496167, -1.110594041641138], # this is the refined q_reset!
+                # Q_RESET_SEEDS["left_relaxed"],
+                # Q_RESET_SEEDS["right_relaxed"],
+                Q_RESET_SEEDS["left_elbow_out"],
+                Q_RESET_SEEDS["right_elbow_out"],
+                # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
+            ]
+            MaxIteration = 5 
+
+        elif method == "Sampling":
+            self.q_reset_list = [
+                Q_RESET_SEEDS["home"],
+                # [0.21122026522160325, -0.44400245603577937, -0.23161109603481303, -2.743793599968008, -1.0309511129162083, 3.7166966782496167, -1.110594041641138], # this is the refined q_reset!
+                # Q_RESET_SEEDS["left_relaxed"],
+                # Q_RESET_SEEDS["right_relaxed"],
+                Q_RESET_SEEDS["left_elbow_out"],
+                Q_RESET_SEEDS["right_elbow_out"],
+                # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
+            ]
+            q_reset_list += uniform_q_sampling(5)
+            MaxIteration = 0
+ 
+        start_time = time.time()
+        self.current_config = self.robot.get_current_config()
+        for constraint in constraints:
+            self._sample_redundant(constraint, source_tag={"kind":"init","step":constraint.task_step})
+            if len(self.q_trajectory[constraint.task_step]) == 0:
+                q_goal = None
+                raise RuntimeError(f"constraint{constraint.task_step} has no feasible q at all!")
+        planned_dict = dp_plan_yaw_path(feasible_by_step=self.q_trajectory, joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]))
+        if planned_dict is None:
+            return {
+                "success": False,
+                "total_cost": None,
+                "max_edge_cost": None,
+                "planned_dict": None,
+                "path": None,
+            }
+        
+        # Evaluation&Refinemnt!
+        sorted_idx = 0
+        for j in range(MaxIteration):
+            path = planned_dict['path']
+            selected_index, selected_edge_cost = sorted(enumerate(planned_dict["path_costs"]),key=lambda x: x[1],reverse=True)[sorted_idx]
+            max_index, max_edge_cost = sorted(enumerate(planned_dict["path_costs"]),key=lambda x: x[1],reverse=True)[0]
+            
+            # Add some randomness ...
+            sorted_idx += 1
+            if sorted_idx > 2:
+                sorted_idx = 0
+
+            new_q_rest_list = [path[selected_index][0].tolist(), path[selected_index+1][0].tolist()]
+            print(f"Iter times: {j}, Max edge cost: {max_edge_cost}, Total cost: {planned_dict['total_cost']}, worst_idx: {np.argmax(planned_dict['path_costs'])}, selected_index: {selected_index}")
+            if max_edge_cost < 0: # set this threashold accordingly
+                break
+            # Refining...
+            refine_yaw_offset = np.deg2rad(20)
+
+            for i, constraint in enumerate(constraints):
+                if abs(i-selected_index) < 5:
+                    temp_q_rest_list = new_q_rest_list.copy()
+                else:
+                    continue
+
+                old_yaw = path[i][1]
+                low_bound = min(refine_yaw_offset, old_yaw-np.rad2deg(30))
+                high_bound = min(refine_yaw_offset, np.rad2deg(150)-old_yaw)
+                self.yaws = np.linspace(low_bound, high_bound, 20).tolist()
+
+                self._sample_redundant(constraint, source_tag={"kind":"refine", "iter":j+1, "from_edge":max_index})
+            planned_dict = dp_plan_yaw_path(feasible_by_step=self.q_trajectory, joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]))
+
+        total_time = time.time()-start_time
+        print(f"Total time: {total_time}")
+        path = planned_dict['path'] 
+        path_sources = [
+            self.q_source_trajectory[step][cand_idx]
+            for step, cand_idx in enumerate(planned_dict["indices"])
+        ]
+        max_index, max_edge_cost = max(enumerate(planned_dict["path_costs"]), key=lambda x: x[1])
+        print(f"Iter times: {MaxIteration}, Max edge cost: {max_edge_cost}, Total cost: {planned_dict['total_cost']}, worst_idx: {np.argmax(planned_dict['path_costs'])}")
+        return {
+            "success": True,
+            "total_cost": float(planned_dict["total_cost"]),
+            "max_edge_cost": float(max_edge_cost),
+            "planned_dict": planned_dict,
+            "path": path,
+        }
+
+            
+            
+
+
+
+        
+ 

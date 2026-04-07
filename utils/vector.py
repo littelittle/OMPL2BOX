@@ -1,4 +1,12 @@
 import math
+from dataclasses import dataclass
+
+@dataclass
+class WaypointConstraint:
+    pos: list
+    normal: list
+    horizontal: list
+    task_step: int
 
 def _dot(a, b):
     return sum(x * y for x, y in zip(a, b))

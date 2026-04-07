@@ -12,7 +12,7 @@ from test_env import is_feasible, search_traj
 from scene import create_pedestal
 from utils.yaw_dp import dp_plan_yaw_path, Q_RESET_SEEDS, uniform_q_sampling
 from utils.path import interpolate_joint_line
-from utils.vector import quat_from_normal_and_yaw
+from utils.vector import quat_from_normal_and_yaw, WaypointConstraint
 from utils.drawer import plot_feasible_yaw_evolution_greedy, plot_threshold_3d_with_init_layer, plot_threshold_3d_with_layer_views
 
 
@@ -41,6 +41,38 @@ class MailerBoxTask(Task):
         self.planner = PandaGripperPlanner(oracle_function=self.mailerbox.get_flap_keypoint_pose, cid=self.sim.cid, box_id=box_id, plane_id=self.sim.plane_id)
         self.tc_planner = TaskConstraintPlanner(robot_planner=self.planner)
         # planner.box_attached = 10 # # TODO: This is a remnant of ompl. Investigate whether this tag actually has any potential effect.
+
+
+    def search_task_path(self):
+        # Configure the order of the array
+        if self.box_closed:
+            start_angle_tuple = (90, 90)
+            goal_angle_tuple = (-90, -90)
+        else:
+            start_angle_tuple = (-90, -90)
+            goal_angle_tuple = (90, 90)
+        start_yaw = np.deg2rad(90)
+
+        # Searching for potential feasible task space!
+        # TODO: move is_feasible and search_traj to this file(maybe class)
+        is_feasible_bound = partial(is_feasible, mailerbox=self.mailerbox, planner=self.planner, former_yaw=start_yaw, closed=self.box_closed) 
+        degree_tuple_list, q_list = search_traj(start_angle_tuple, goal_angle_tuple, is_feasible_bound, num_sample=10)
+        degree_tuple_list = [start_angle_tuple] + degree_tuple_list
+
+        return degree_tuple_list
+    
+
+    def build_constraint_sequence(self, degree_tuple_list):
+        constraints = []
+        for i, degree_tuple in enumerate(degree_tuple_list):
+            # Searching for feasible configuration!
+            pos, normal, horizontal = self.mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(degree_tuple[1]), lid_angle=np.deg2rad(degree_tuple[0]))
+            constraints.append(
+                WaypointConstraint(pos, normal, horizontal, i)
+            )
+        
+        return constraints
+        
 
     def _compute_plan_quality(self):
         planner = self.planner
@@ -87,7 +119,7 @@ class MailerBoxTask(Task):
             yaws.append(yaws[0] + offset)
             yaws.append(yaws[0] - offset)
 
-        # Initialize the q_reset fed in to the IK solver
+        # Initialize the q_reset fed into the IK solver
         if self.method == "Iteration": 
             q_reset_list = [
                 Q_RESET_SEEDS["home"],
@@ -253,7 +285,95 @@ class MailerBoxTask(Task):
             "path": path,
         }
 
+    def _run(self, execute=True):
+        degree_tuple_list = self.search_task_path()
+        constraints = self.build_constraint_sequence(degree_tuple_list)
+        plan_metrics = self.tc_planner.solve_constraint_path(constraints, self.method)
+        if not plan_metrics["success"]:
+            raise RuntimeError("Failed to compute a feasible MailerBoxTask plan.")
+
+        path = plan_metrics["path"]
+        candidate_yaw_trajectory = []
+
+        # Start excuting...
+        if execute:
+            # move to grasp...
+            # start_yaw = path[0][1]
+            # pos, normal, horizontal = self.mailerbox.get_flap_keypoint_pose()
+            # orn = quat_from_normal_and_yaw(normal, start_yaw, horizontal, finger_axis_is_plus_y=False)
+            # grasp_q_goal = planner.solve_ik_collision_aware(pos, orn, collision=False, q_reset=path[0][0])
+            grasp_q_goal = path[0][0]
+
+
+            ompl_path = self.planner.plan_ompl(self.planner.get_current_config(), grasp_q_goal, num_waypoints=200, optimal=False)
+            if ompl_path is None:
+                raise RuntimeError("path is none!")
+            q_traj = []
+            for i in range(ompl_path.getStateCount()):
+                s = ompl_path.getState(i)
+                q_traj.append([float(s[j]) for j in range(self.planner.ndof)])
+            # import ipdb; ipdb.set_trace()
+            self.planner.execute_joint_trajectory_real(q_traj, dt=0.05, interpolate=False)
+            self.planner.set_robot_config(grasp_q_goal)
+
+            self.planner.close_gripper_to_width(target_width=0.0, force=1000)
+
+            # open the flap/lid...
+            for i, (q_goal, yaw) in enumerate(path):
+                candidate_yaw_trajectory.append(yaw)
+                q_start = self.planner.get_current_config()
+                traj = interpolate_joint_line(q_start, q_goal, 45)
+                self.planner.execute_joint_trajectory_real(traj, N_ref=75)
+                self.planner.close_gripper_to_width(target_width=0, force=1000, wait=0.5)
+
+
+        # Visualization for C-bundles...
+        # plot_feasible_yaw_evolution_greedy(
+        #     q_trajectory,
+        #     chosen_yaw_trajectory=candidate_yaw_trajectory,
+        #     save_path=f"exp/03_28/{self.box_closed}closed_{self.scaling}_iter_mix_rand.png",
+        #     show=True,
+        #     use_degree=True,
+        #     angular_indices=range(7),   # Panda arm joints
+        #     one_to_one=False,           
+        # )
+        
+        # plot_threshold_3d_with_init_layer(
+        #     q_trajectory=q_trajectory,
+        #     q_source_trajectory=q_source_trajectory,
+        #     planned_dict=planned_dict,
+        #     distance_threshold=0.9,
+        #     save_path=f"exp/NEW/{self.box_closed}closed_{self.scaling}_threshold_3d_with_init.png",
+        #     show=True,
+        #     use_degree=True,
+        #     z_mode="refine_iter",
+        #     draw_failed_exec_edges=False,
+        #     annotate_exec_dist=False,
+        # )
+
+        # plot_threshold_3d_with_layer_views(
+        #     q_trajectory=q_trajectory,
+        #     q_source_trajectory=q_source_trajectory,
+        #     planned_dict=planned_dict,
+        #     distance_threshold=1.11,
+        #     focus_refine_iter="last",   # 或者 0, 1, 2 ...
+        #     save_path=f"exp/paper/{self.box_closed}closed_{self.scaling}_3d_with_layer_views_max_classic.png",
+        #     show=True,
+        #     use_degree=True,
+        #     draw_failed_exec_edges=False,
+        #     annotate_exec_dist=False,
+        # )
+
+
+
+        # Ending...
+        if self.box_closed==False:
+            print(f"[INFO] The box has been closed!")
+        else:
+            print(f"[INFO] The box has been opened!")
+
     def run(self, execute=True):
+        raise NotImplementedError("Old method run is no longer supported. Use new method _run instead.")
         planner = self.planner
         plan_metrics = self._compute_plan_quality()
         if not plan_metrics["success"]:
