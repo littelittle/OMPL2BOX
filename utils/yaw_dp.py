@@ -69,7 +69,9 @@ def dp_plan_yaw_path(
     joint_weights: Optional[QType] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    在分层候选状态图上做动态规划，找到总 q-space 距离最小的路径。
+    在分层候选状态图上做动态规划，按字典序优化路径：
+    1. 先最小化最大 edge cost
+    2. 再最小化总 q-space 距离
 
     参数
     ----
@@ -93,8 +95,11 @@ def dp_plan_yaw_path(
         {
             "path": [(q, yaw), ...],           # 最优路径
             "indices": [j0, j1, ...],          # 每层选中的候选下标
-            "total_cost": float,               # 总 cost
-            "dp_costs": [np.ndarray, ...],     # 每层每个候选的 cost-to-go
+            "total_cost": float,               # 总距离（第二优化目标）
+            "max_edge_cost": float,            # 最大 edge cost（第一优化目标）
+            "dp_costs": [np.ndarray, ...],     # 兼容旧接口，等同于 dp_sum_costs
+            "dp_sum_costs": [np.ndarray, ...], # 每层每个候选的最优 suffix 总距离
+            "dp_max_costs": [np.ndarray, ...], # 每层每个候选的最优 suffix 最大 edge
             "next_choice": [np.ndarray, ...],  # 回溯指针
         }
     若无可行路径，返回 None
@@ -125,32 +130,29 @@ def dp_plan_yaw_path(
     if start_q is not None:
         start_q = np.asarray(start_q, dtype=float)
 
-    # dp_costs[i][j] = 从第 i 层第 j 个状态出发，到最后一层的最小累计代价
-    dp_costs: List[np.ndarray] = []
-    dp_sums: List[np.ndarray] = []
-    dp_max: List[np.ndarray] = []
+    # dp_sum_costs[i][j] / dp_max_costs[i][j] 表示从第 i 层第 j 个状态出发，
+    # 到最后一层的最优 suffix 代价对 (max_edge, total_sum)。
+    dp_sum_costs: List[np.ndarray] = []
+    dp_max_costs: List[np.ndarray] = []
     next_choice: List[np.ndarray] = []
 
     for layer in proc_layers:
         m = len(layer["raw"])
-        dp_costs.append(np.full(m, np.inf, dtype=float))
-        dp_sums.append(np.full(m, np.inf, dtype=float))
-        dp_max.append(np.full(m, np.inf, dtype=float))
+        dp_sum_costs.append(np.full(m, np.inf, dtype=float))
+        dp_max_costs.append(np.full(m, np.inf, dtype=float))
         next_choice.append(np.full(m, -1, dtype=int))
 
     # 最后一层：cost-to-go = 0
     last_idx = n_steps - 1
-    dp_costs[last_idx][:] = 0.0
-    dp_sums[last_idx][:] = 0.0
-    dp_max[last_idx][:] = 0.0
+    dp_sum_costs[last_idx][:] = 0.0
+    dp_max_costs[last_idx][:] = 0.0
 
     # 从后往前做 DP
     for i in range(n_steps - 2, -1, -1):
         curr_qs = proc_layers[i]["qs"]       # shape: [m, dof]
         next_qs = proc_layers[i + 1]["qs"]   # shape: [k, dof]
-        next_dp = dp_costs[i + 1]            # shape: [k]
-        next_sum_dp = dp_sums[i+1]           # shape: [k]
-        next_max_dp = dp_max[i+1]            # shape: [k]
+        next_sum_dp = dp_sum_costs[i + 1]    # shape: [k]
+        next_max_dp = dp_max_costs[i + 1]    # shape: [k]
 
         for j, q_curr in enumerate(curr_qs):
             # 计算 q_curr 到下一层所有候选的距离
@@ -161,44 +163,46 @@ def dp_plan_yaw_path(
             dists = np.linalg.norm(diffs, axis=1)  # [k]
 
             # 下一层本身必须可达
-            valid = np.isfinite(next_dp)
+            valid = np.isfinite(next_sum_dp) & np.isfinite(next_max_dp)
 
             if hard_threshold:
                 # 超过阈值直接禁掉
                 valid = valid & (dists <= jump_threshold)
                 if not np.any(valid):
                     continue
-
-                total = np.full_like(dists, np.inf, dtype=float)
-                # total[valid] = dists[valid] + next_dp[valid]
-                total[valid] = np.maximum(dists[valid], next_max_dp[valid]) + 0.5*(dists[valid] + 0.5*next_sum_dp[valid])
-                # total[valid] = dists[valid]**3 + next_dp[valid]
+                edge_costs = dists
             else:
                 # 软惩罚：超过阈值允许，但加大代价
                 penalty = np.where(dists > jump_threshold, big_penalty, 0.0)
-                total = dists + penalty + next_dp
-                total[~valid] = np.inf
+                edge_costs = dists + penalty
+                if not np.any(valid):
+                    continue
 
-            best_k = int(np.argmin(total))
-            best_cost = float(total[best_k])
-            best_sum_cost = float(dists[best_k]+next_sum_dp[best_k])
-            best_max_cost = max(dists[best_k], next_max_dp[best_k])
+            valid_idx = np.flatnonzero(valid)
+            cand_max = np.maximum(edge_costs[valid_idx], next_max_dp[valid_idx])
+            cand_sum = edge_costs[valid_idx] + next_sum_dp[valid_idx]
+            order = np.lexsort((cand_sum, cand_max))
+            best_local = int(order[0])
+            best_k = int(valid_idx[best_local])
+            best_sum_cost = float(cand_sum[best_local])
+            best_max_cost = float(cand_max[best_local])
 
-            if math.isfinite(best_cost):
-                dp_costs[i][j] = best_cost
-                dp_sums[i][j] = best_sum_cost
-                dp_max[i][j] = best_max_cost
+            if math.isfinite(best_sum_cost) and math.isfinite(best_max_cost):
+                dp_sum_costs[i][j] = best_sum_cost
+                dp_max_costs[i][j] = best_max_cost
                 next_choice[i][j] = best_k
 
     # 选择第 0 层起点
-    first_dp = dp_costs[0]
-    feasible_start_mask = np.isfinite(first_dp)
+    first_sum_dp = dp_sum_costs[0]
+    first_max_dp = dp_max_costs[0]
+    feasible_start_mask = np.isfinite(first_sum_dp) & np.isfinite(first_max_dp)
 
     if not np.any(feasible_start_mask):
         return None
 
     if start_q is None:
-        start_total = first_dp.copy()
+        start_sum = first_sum_dp.copy()
+        start_max = first_max_dp.copy()
     else:
         first_qs = proc_layers[0]["qs"]
         diffs0 = first_qs - start_q[None, :]
@@ -210,18 +214,26 @@ def dp_plan_yaw_path(
             valid0 = feasible_start_mask & (start_dists <= jump_threshold)
             if not np.any(valid0):
                 return None
-
-            start_total = np.full_like(first_dp, np.inf, dtype=float)
-            start_total[valid0] = start_dists[valid0] + first_dp[valid0]
+            start_edge_costs = start_dists
         else:
             penalty0 = np.where(start_dists > jump_threshold, big_penalty, 0.0)
-            start_total = start_dists + penalty0 + first_dp
-            start_total[~feasible_start_mask] = np.inf
+            valid0 = feasible_start_mask
+            start_edge_costs = start_dists + penalty0
 
-    start_idx = int(np.argmin(start_total))
-    total_cost = float(start_total[start_idx])
+        start_sum = np.full_like(first_sum_dp, np.inf, dtype=float)
+        start_max = np.full_like(first_max_dp, np.inf, dtype=float)
+        start_sum[valid0] = start_edge_costs[valid0] + first_sum_dp[valid0]
+        start_max[valid0] = np.maximum(start_edge_costs[valid0], first_max_dp[valid0])
 
-    if not math.isfinite(total_cost):
+    valid_start_idx = np.flatnonzero(feasible_start_mask if start_q is None else np.isfinite(start_sum) & np.isfinite(start_max))
+    cand_start_max = start_max[valid_start_idx]
+    cand_start_sum = start_sum[valid_start_idx]
+    start_order = np.lexsort((cand_start_sum, cand_start_max))
+    start_idx = int(valid_start_idx[int(start_order[0])])
+    total_cost = float(start_sum[start_idx])
+    max_edge_cost = float(start_max[start_idx])
+
+    if not math.isfinite(total_cost) or not math.isfinite(max_edge_cost):
         return None
 
     # 回溯整条路径
@@ -234,21 +246,27 @@ def dp_plan_yaw_path(
 
     path: List[State] = []
     path_costs: List = []
+    start_edge_cost = None
     for i, j in enumerate(indices):
         q, yaw = proc_layers[i]["raw"][j]
         path.append((np.asarray(q, dtype=float), float(yaw)))
         if i > 0:
-            diff = np.asarray(q) - np.asarray(former_q)
-            if joint_weights is not None:
-                diff = diff * joint_weights
-            dist = np.linalg.norm(diff).item()
-            path_costs.append(dist)
+            path_costs.append(_weighted_l2_distance(np.asarray(q, dtype=float), np.asarray(former_q, dtype=float), joint_weights))
         former_q = q
+
+    if start_q is not None:
+        start_edge_cost = _weighted_l2_distance(path[0][0], start_q, joint_weights)
+
     return {
         "path": path,
         "path_costs": path_costs,
         "indices": indices,
         "total_cost": total_cost,
-        "dp_costs": dp_costs,
+        "max_edge_cost": max_edge_cost,
+        "start_edge_cost": start_edge_cost,
+        "lexicographic_cost": (max_edge_cost, total_cost),
+        "dp_costs": dp_sum_costs,
+        "dp_sum_costs": dp_sum_costs,
+        "dp_max_costs": dp_max_costs,
         "next_choice": next_choice,
     }

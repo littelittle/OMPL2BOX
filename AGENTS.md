@@ -35,7 +35,6 @@ python main.py --nogui
 Useful explicit variants:
 
 ```bash
-python main.py --config config/defaults.json --mode FlapBoxTask --nogui
 python main.py --config config/MailerBoxTask.json --mode MailerBoxTask --nogui
 ```
 
@@ -44,7 +43,7 @@ Currently supported CLI arguments in `main.py`:
 - `--config`: path to JSON config. Current default is `config/MailerBoxTask.json`.
 - `--mode`: `FlapBoxTask` or `MailerBoxTask`.
 - `--gui` / `--nogui`
-- `--method`: `Sampling` or `Iteration`
+- `--method`: `Sampling`, `Iteration`, or `RRT`
 - `--box_scaling`: float
 - `--box_pos`: list-like override for mailer box position
 - `--box_yaw`: float

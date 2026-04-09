@@ -36,7 +36,7 @@ def main():
         "--nogui", dest="gui", action="store_false", help="Run in DIRECT mode"
     )
     parser.add_argument(
-        "--method", choices=['Sampling', "Iteration"], default=None, help="refinement method to use"
+        "--method", choices=['Sampling', "Iteration", "RRT"], default=None, help="constraint-path planning method to use"
     )
     parser.add_argument(
         "--box_scaling", type=float, default=None, help="sacle of the box"
@@ -79,7 +79,7 @@ def main():
         raise NotImplementedError(f"{mode} not supported")
     task = task_cls(cfg, sim)
     task.setup_scene()
-    task._run(execute=True)
+    task.run(execute=True)
 
     # print("Press Ctrl+C to quit the GUI window.")
     # while True:

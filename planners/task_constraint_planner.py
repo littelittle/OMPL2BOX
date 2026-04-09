@@ -3,36 +3,15 @@ import numpy as np
 from typing import List, Literal 
 
 from planners.grip_planner import PandaGripperPlanner
+from planners.constraint_sequence_rrt_planner import ConstraintSequenceRRTPlanner
 from utils.vector import quat_from_normal_and_yaw, WaypointConstraint
 from utils.yaw_dp import dp_plan_yaw_path, Q_RESET_SEEDS, uniform_q_sampling
+
 
 class TaskConstraintPlanner:
     def __init__(self, robot_planner: PandaGripperPlanner):
         self.robot = robot_planner
 
-    def sample_redundant(self, index, q_trajectory, q_reset_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=None, source_tag=None, finger_axis_is_plus_y=False):
-        raise NotImplementedError("Old method run is no longer supported. Use new method _sample_redundant instead.")
-        q_goal_list = []
-        q_source_list = []
-        current_q_reset_list = q_reset_list.copy()
-        for reset_idx, q_reset in enumerate(current_q_reset_list):
-            for yaw in yaws:
-                orn = quat_from_normal_and_yaw(normal, yaw, horizontal, finger_axis_is_plus_y=finger_axis_is_plus_y)
-                self.robot.set_robot_config(current_config)
-                q_goal = self.robot.solve_ik_collision_aware(pos, orn, collision=False, max_trials=1, reset=False, q_reset=q_reset)
-                self.robot.set_robot_config(current_config)
-                if q_goal is not None:
-                    q_goal_list.append((q_goal, yaw))
-                    if q_source_trajectory is not None:
-                        q_source_list.append({
-                            "source_tag": source_tag,     # init or refine
-                            "reset_idx": reset_idx,       # which one is it in q_reset_list
-                            "q_reset": np.asarray(q_reset, dtype=float).tolist(),
-                            "yaw": float(yaw),
-                        })
-        q_trajectory[index] += q_goal_list
-        if q_source_trajectory is not None:
-            q_source_trajectory[index] += q_source_list
 
     def _sample_redundant(self, constraint:WaypointConstraint, source_tag, finger_axis_is_plus_y=False):
         q_goal_list = []
@@ -53,6 +32,7 @@ class TaskConstraintPlanner:
                     })
         self.q_trajectory[constraint.task_step] += q_goal_list
         self.q_source_trajectory[constraint.task_step] += q_source_list
+
 
     def qs_refinement(self, q1, q2, step_size:float=0.01):
         q_backup = self.get_current_config()
@@ -94,7 +74,20 @@ class TaskConstraintPlanner:
         return yaws
 
 
-    def solve_constraint_path(self, constraints: List[WaypointConstraint], method: Literal["Sampling", "Iteration"], ):
+    def solve_constraint_path(self, constraints: List[WaypointConstraint], method: Literal["Sampling", "Iteration", "RRT"], ):
+        if method == "RRT":
+            planner = ConstraintSequenceRRTPlanner(
+                self.robot,
+                joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]),
+            )
+
+            start_time = time.time()
+            solution = planner.solve(constraints)
+            total_time = time.time()-start_time
+            print(f"Total time: {total_time}")
+            print(f"Max edge cost is {solution['max_edge_cost']}, Total cost is {solution['total_cost']}")
+            return solution
+
         # First, open the gripper
         self.robot.open_gripper()
         
@@ -116,7 +109,7 @@ class TaskConstraintPlanner:
                 Q_RESET_SEEDS["right_elbow_out"],
                 # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
             ]
-            MaxIteration = 5 
+            MaxIteration = 50
 
         elif method == "Sampling":
             self.q_reset_list = [
@@ -128,7 +121,7 @@ class TaskConstraintPlanner:
                 Q_RESET_SEEDS["right_elbow_out"],
                 # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
             ]
-            q_reset_list += uniform_q_sampling(5)
+            self.q_reset_list += uniform_q_sampling(20)
             MaxIteration = 0
  
         start_time = time.time()
@@ -157,28 +150,26 @@ class TaskConstraintPlanner:
             
             # Add some randomness ...
             sorted_idx += 1
-            if sorted_idx > 2:
+            if sorted_idx > 4:
                 sorted_idx = 0
 
             new_q_rest_list = [path[selected_index][0].tolist(), path[selected_index+1][0].tolist()]
+            self.q_reset_list = new_q_rest_list
             print(f"Iter times: {j}, Max edge cost: {max_edge_cost}, Total cost: {planned_dict['total_cost']}, worst_idx: {np.argmax(planned_dict['path_costs'])}, selected_index: {selected_index}")
-            if max_edge_cost < 0: # set this threashold accordingly
+            if max_edge_cost < 0.6: # set this threashold accordingly
                 break
+
             # Refining...
-            refine_yaw_offset = np.deg2rad(20)
+            refine_yaw_offset = np.deg2rad(30)
 
             for i, constraint in enumerate(constraints):
-                if abs(i-selected_index) < 5:
-                    temp_q_rest_list = new_q_rest_list.copy()
-                else:
-                    continue
+                if abs(i-selected_index) < 15:
+                    old_yaw = path[i][1]
+                    low_bound = max(np.deg2rad(30), old_yaw - refine_yaw_offset)
+                    high_bound = min(np.deg2rad(150), old_yaw + refine_yaw_offset)
+                    self.yaws = np.linspace(low_bound, high_bound, 20).tolist()
+                    self._sample_redundant(constraint, source_tag={"kind":"refine", "iter":j+1, "from_edge":max_index})
 
-                old_yaw = path[i][1]
-                low_bound = min(refine_yaw_offset, old_yaw-np.rad2deg(30))
-                high_bound = min(refine_yaw_offset, np.rad2deg(150)-old_yaw)
-                self.yaws = np.linspace(low_bound, high_bound, 20).tolist()
-
-                self._sample_redundant(constraint, source_tag={"kind":"refine", "iter":j+1, "from_edge":max_index})
             planned_dict = dp_plan_yaw_path(feasible_by_step=self.q_trajectory, joint_weights=np.array([1, 1, 1, 1, 1, 1, 1]))
 
         total_time = time.time()-start_time

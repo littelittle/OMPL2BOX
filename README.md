@@ -73,7 +73,7 @@ python main.py --box_yaw 20 --box_cloased
 - `--config`: path to JSON config file. Default: `config/MailerBoxTask.json`
 - `--mode`: `FlapBoxTask` or `MailerBoxTask`
 - `--gui` / `--nogui`
-- `--method`: `Sampling` or `Iteration`
+- `--method`: `Sampling`, `Iteration`, or `RRT`
 - `--box_scaling`: float override for mailer-box scale
 - `--box_pos`: list-like override for mailer-box position
 - `--box_yaw`: float override for mailer-box yaw(degree)
