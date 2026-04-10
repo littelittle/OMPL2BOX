@@ -2,3 +2,4 @@ from .suck_planner import KukaOmplPlanner
 from .grip_planner import PandaGripperPlanner
 from .constraint_sequence_rrt_planner import ConstraintSequenceRRTPlanner
 from .task_constraint_planner import TaskConstraintPlanner
+from .flap_primitives import FlapManipulationPrimitives

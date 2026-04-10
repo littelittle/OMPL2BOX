@@ -7,6 +7,7 @@ import pybullet as p
 import numpy as np
 
 from utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross, quat_from_normal_and_yaw
+from utils.yaw_dp import Q_RESET_SEEDS
 
 class GenericPlanner:
     """
@@ -231,7 +232,8 @@ class GenericPlanner:
                 rest = base_rest
             else:
                 # add some noise to the rest pose 
-                rest = [r + random.uniform(-0.1, 0.1) for r in base_rest]
+                rest = [r + random.uniform(-0.1, 0.1) for r in Q_RESET_SEEDS[t%len(Q_RESET_SEEDS)]]
+
 
             ik = p.calculateInverseKinematics(
                 self.robot_id,

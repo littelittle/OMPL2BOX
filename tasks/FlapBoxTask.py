@@ -3,7 +3,7 @@ import random
 import pybullet as p
 
 from models import FoldableBox
-from planners import PandaGripperPlanner
+from planners import PandaGripperPlanner, FlapManipulationPrimitives
 from scene import create_pedestal
 from tasks import Task
 
@@ -11,7 +11,7 @@ from tasks import Task
 class FlapBoxTask(Task):
     def setup_scene(self):
         # load config
-        box_base_pos = self.config.get("foldable_box_pos", [0.7, 0.0, 0.1])
+        box_base_pos = self.config.get("foldable_box_pos", [0.6, 0.0, 0.1])
         box_base_orn = self.config.get("foldable_box_orn", p.getQuaternionFromEuler([0, 0, random.uniform(-0.3, 0.3)]))
         if self.config.get("robot", "panda") != "panda": raise NotImplementedError("ONLY SUPPORT PANDA FRANKA NOW")
         pedestal_h = self.config.get("pedestal_h", 0.20)
@@ -29,16 +29,21 @@ class FlapBoxTask(Task):
             base_orn=box_base_orn,
             cid=self.sim.cid,
         )
-        self.planner = PandaGripperPlanner(
+        self.robot = PandaGripperPlanner(
             oracle_function=self.foldable_box.get_flap_keypoint_pose,
             cid=self.sim.cid,
             box_id=self.foldable_box.body_id,
             plane_id=self.sim.plane_id,
         )
+        self.flap_ops = FlapManipulationPrimitives(
+            robot=self.robot,
+            oracle_function=self.foldable_box.get_flap_keypoint_pose, 
+            box_id=self.foldable_box.body_id,
+        )
 
-    def run(self):
+    def run(self, execute=True):
         print("[Demo] Closing a foldable box with 2 flaps ...")
         for i in range(3, 1, -1):
-            self.planner.close_flap(i, PL='VAMP')
-            self.planner.back_home(PL='VAMP')
-            print(f"Flap {i} opened.")
+            self.flap_ops.close_flap(i, PL='VAMP')
+            self.flap_ops.back_home(PL='VAMP')
+            print(f"Flap {i} closed.")
