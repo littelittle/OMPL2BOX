@@ -11,7 +11,7 @@ class PhysicsConfig:
     gravity: Tuple[float, float, float] = (0.0, 0.0, -9.81)
     time_step: float = 1.0 / 240.0
     num_sub_steps: int = 1
-    num_solver_iterations: int = 75
+    num_solver_iterations: int = 100
 
 # NOTE: cid, gui, plane_id and physics all belong to the same world! should modified togther!
 @dataclass

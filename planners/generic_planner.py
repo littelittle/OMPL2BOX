@@ -10,8 +10,9 @@ from utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _c
 
 class GenericPlanner:
     """
-    Robot-agnostic planning helpers that rely on provided joint/robot metadata.
-    This class is intentionally minimal and does not load any specific robot.
+    Robot-agnostic planning helpers that rely on provided robot metadata.
+    Subclasses are expected to load the robot and extract joint/link metadata
+    before calling this initializer.
     """
 
     def __init__(
@@ -55,15 +56,6 @@ class GenericPlanner:
         self.box_distance = box_distance
         self.ndof = len(self.joint_indices)
 
-        self.active_ids = []
-        for ji in range(p.getNumJoints(self.robot_id, physicsClientId=self.cid)):
-            info = p.getJointInfo(self.robot_id, ji, physicsClientId=self.cid)
-            if info[2] in (p.JOINT_PRISMATIC, p.JOINT_REVOLUTE):
-                self.active_ids.append(ji)
-
-    # @property
-    # def ndof(self) -> int:
-    #     return len(self.joint_indices)
 
     def set_robot_config(self, q: List[float]):
         assert len(q) == self.ndof
@@ -228,37 +220,6 @@ class GenericPlanner:
 
         return qn
 
-    def _quat_from_normal_and_yaw(
-    self,
-    normal_world,
-    yaw: float,
-    horizontal, 
-    finger_axis_is_plus_y: bool = True,  # True: +Y 对齐 normal；False: -Y 对齐 normal
-    ):
-        raise RuntimeError("quat_from_normal_and_yaw has moved to utils/vector.py")
-        n = _normalize(normal_world)
-
-        # 让 EE 的 y 轴对齐 normal（或反向）
-        y = [n[0], n[1], n[2]] if finger_axis_is_plus_y else [-n[0], -n[1], -n[2]]
-
-        # 选一个不与 y 平行的参考向量，构造正交基
-        # tmp = [1.0, 0.0, 0.0] if abs(y[0]) < 0.9 else [0.0, 0.0, 1.0]
-        x0 = _normalize(horizontal)
-        z0 = _normalize(_cross(x0, y))  # 保证右手系：x × y = z
-
-        # 绕 y（也就是 normal）旋转 yaw：在 x-z 平面里转
-        c, s = math.cos(yaw), math.sin(yaw)
-        x = [x0[i] * c + z0[i] * s for i in range(3)]
-        z = [-x0[i] * s + z0[i] * c for i in range(3)]
-
-        # 列向量 [x, y, z]
-        R = [
-            [x[0], y[0], z[0]],
-            [x[1], y[1], z[1]],
-            [x[2], y[2], z[2]],
-        ]
-        return _mat_to_quat(R)
-
     def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=20, reset=True, q_reset=None):
         base_rest = q_reset if q_reset is not None else self.rest_pose[:] 
         if reset:
@@ -286,7 +247,7 @@ class GenericPlanner:
                 residualThreshold=1e-4,
             )
             q_candidate = list(ik[: self.ndof])
-            q_candidate = self._wrap_into_limits(q_candidate, self.home_config)
+            q_candidate = self.wrap_into_limits(q_candidate, self.home_config)
 
             # check in range
             bad = False
@@ -307,37 +268,6 @@ class GenericPlanner:
             self.set_robot_config(q_backup)
         return None 
 
-    def sample_redundant(self, index, q_trajectory, q_reset_list, yaws, normal, horizontal, pos, current_config, q_source_trajectory=None, source_tag=None, finger_axis_is_plus_y=False):
-        raise RuntimeError("This method has been deprecated, and moved to TaskConstraintPlanner")
-        q_goal_list = []
-        q_source_list = []
-        current_q_reset_list = q_reset_list.copy()
-        # if index > 0 :
-        #     former_q_list = [q[0] for q in q_trajectory[index-1]]
-        #     # import ipdb; ipdb.set_trace()
-        #     mean_former_q = np.mean(former_q_list, axis=0).tolist()
-        #     if former_q_list != []:
-        #         current_q_reset_list.append(mean_former_q)
-        for reset_idx, q_reset in enumerate(current_q_reset_list):
-            
-            for yaw in yaws:
-                orn = quat_from_normal_and_yaw(normal, yaw, horizontal, finger_axis_is_plus_y=finger_axis_is_plus_y)
-                self.set_robot_config(current_config)
-                q_goal = self.solve_ik_collision_aware(pos, orn, collision=False, max_trials=1, reset=False, q_reset=q_reset)
-                self.set_robot_config(current_config)
-                if q_goal is not None:
-                    q_goal_list.append((q_goal, yaw))
-                    if q_source_trajectory is not None:
-                        q_source_list.append({
-                            "source_tag": source_tag,     # 这次调用属于 init 还是 refine
-                            "reset_idx": reset_idx,       # 是 q_reset_list 里的第几个
-                            "q_reset": np.asarray(q_reset, dtype=float).tolist(),
-                            "yaw": float(yaw),
-                        })
-        q_trajectory[index] += q_goal_list
-        if q_source_trajectory is not None:
-            q_source_trajectory[index] += q_source_list
-
     def get_Jacobian(self, ):
         q_full = np.array([p.getJointState(self.robot_id, j, physicsClientId=self.cid)[0] for j in self.active_ids], float)
         zero = [0.0] * len(self.active_ids)
@@ -356,33 +286,3 @@ class GenericPlanner:
         J = np.vstack([np.array(Jlin), np.array(Jang)])  # 6 x n
         J = J[:, :-2]
         return J
-
-    def qs_refinement(self, q1, q2):
-        raise RuntimeError("This method has been deprecated, and moved to TaskConstraintPlanner")
-        q_backup = self.get_current_config()
-
-        # get N1
-        self.set_robot_config(q1)
-        J = self.get_Jacobian()
-        JJt = J @ J.T
-        J_pinv = J.T @ np.linalg.inv(JJt + 1e-4 * np.eye(6))
-        N1 = np.eye(len(self.joint_indices)) - J_pinv @ J  # nullspace projector
-
-        # get N2
-        self.set_robot_config(q2)
-        J = self.get_Jacobian()
-        JJt = J @ J.T
-        J_pinv = J.T @ np.linalg.inv(JJt + 1e-4 * np.eye(6))
-        N2 = np.eye(len(self.joint_indices)) - J_pinv @ J  # nullspace projector
-
-        # target vector
-        q_delta = np.asarray(q2)-np.asarray(q1)
-
-        q1_delta = N1@q_delta
-        q2_delta = N2@q_delta
-
-        print(np.linalg.norm(q_delta), np.linalg.norm(q1_delta), np.linalg.norm(q2_delta))
-        self.set_robot_config(q_backup)
-
-        return (np.asarray(q1)+1*q1_delta).tolist(), (np.asarray(q2)-1*q2_delta).tolist() 
-

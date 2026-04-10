@@ -97,7 +97,7 @@ class MailerBoxTask(Task):
             optimal=False,
         )
         if ompl_path is None:
-            raise RuntimeError("path is none!")
+            raise RuntimeError("OMPL failded to plan a feasible trajectory to the grasp pose!")
 
         q_traj = []
         for i in range(ompl_path.getStateCount()):
@@ -123,6 +123,7 @@ class MailerBoxTask(Task):
         constraints = self.build_constraint_sequence(degree_tuple_list)
         plan_metrics = self.tc_planner.solve_constraint_path(constraints, self.method)
         if not plan_metrics["success"]:
+            print("Debug Info:")
             print(plan_metrics)
             raise RuntimeError("Failed to compute a feasible MailerBoxTask plan.")
 

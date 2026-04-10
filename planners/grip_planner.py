@@ -29,70 +29,58 @@ class PandaGripperPlanner(GenericPlanner):
     """
 
     def __init__(self, oracle_function=None, cid: Optional[int] = None, box_id: Optional[int] = None, plane_id: Optional[int] = None):
-        self.cid = cid
         p.setAdditionalSearchPath(pybullet_data.getDataPath())
-        p.setGravity(0, 0, -9.81, physicsClientId=self.cid)
-
-        # Environment: plane + foldable box
-        self.plane_id = plane_id
-        # import ipdb; ipdb.set_trace()
-        # self.foldable_box = FoldableBox(base_pos=box_base_pos, cid=self.cid)
-        # self.box_id = self.foldable_box.body_id
 
         # Robot: Franka Panda with gripper
-        self.robot_id = p.loadURDF(
+        robot_id = p.loadURDF(
             "franka_panda/panda.urdf",
             basePosition=[0, 0, 0],
             useFixedBase=True,
             flags=p.URDF_USE_SELF_COLLISION,
-            physicsClientId=self.cid,
+            physicsClientId=cid,
         )
         self.oracle_function = oracle_function
         if box_id is None:
             print("[Warning] box_id is not provided to PandaGripperPlanner, collision checking with the box may not work properly.")
-        self.box_id = box_id
 
-        self.joint_indices: List[int] = []
-        self.collision_link_indices: List[int] = []
-        self.gripper_joint_indices: List[int] = []
-        self.lower_limits: List[float] = []
-        self.upper_limits: List[float] = []
-        self.rest_pose: List[float] = []
-        self.box_attached: int = -1
-        self.ee_link_index: int = -1
         self.box_constraint_id: Optional[int] = None
         self.gripper_open_width: float = 0.08
         self.gripper_close_width: float = 0.0
+        self.gripper_joint_indices: List[int] = []
         self.left_finger_link_index: Optional[int] = None
         self.right_finger_link_index: Optional[int] = None
         self.tip2body=[0.1, 0.0, 0.0]
 
-        self._extract_active_joints()
+        robot_model = self._extract_active_joints(robot_id, cid)
+        super().__init__(
+            cid=cid,
+            robot_id=robot_id,
+            joint_indices=robot_model["joint_indices"],
+            lower_limits=robot_model["lower_limits"],
+            upper_limits=robot_model["upper_limits"],
+            ee_link_index=robot_model["ee_link_index"],
+            collision_link_indices=robot_model["collision_link_indices"],
+            plane_id=plane_id,
+            box_id=box_id,
+            box_attached=-1,
+            control_dt=1.0 / 240.0,
+            segment_duration=0.01,
+            max_torque=500.0,
+            position_gain=0.5,
+            velocity_gain=1.0,
+        )
 
-        self.active_ids = []
-        for ji in range(p.getNumJoints(self.robot_id, physicsClientId=self.cid)):
-            info = p.getJointInfo(self.robot_id, ji, physicsClientId=self.cid)
-            if info[2] in (p.JOINT_PRISMATIC, p.JOINT_REVOLUTE):
-                self.active_ids.append(ji)
+        self.gripper_joint_indices = robot_model["gripper_joint_indices"]
+        self.left_finger_link_index = robot_model["left_finger_link_index"]
+        self.right_finger_link_index = robot_model["right_finger_link_index"]
+        self.active_ids = self.collision_link_indices.copy()
 
-
-        self.ndof = len(self.joint_indices)
         # Slightly tucked home pose to keep gripper over the table.
         self.home_config = [0.0, -0.6, 0.0, -2.4, 0.0, 1.9, 0.8]
         if len(self.home_config) != self.ndof:
             raise RuntimeError("the size of home_config is different from the joint_indices")
         self.rest_pose = list(self.home_config)
-
-        self.control_dt = 1.0 / 240.0
-        self.segment_duration = 0.01
-        self.max_torque = 500.0
-        self.position_gain = 0.5
-        self.velocity_gain = 1.0
-
-        p.setPhysicsEngineParameter(
-            numSolverIterations=100,
-            physicsClientId=self.cid,
-        )
+        
         self.set_robot_config(self.home_config)
 
         # ---------- OMPL setup ----------
@@ -120,10 +108,19 @@ class PandaGripperPlanner(GenericPlanner):
         self.si.setup()
 
     # ---------- PyBullet helpers ----------
-    def _extract_active_joints(self):
-        num_joints = p.getNumJoints(self.robot_id, physicsClientId=self.cid)
+    def _extract_active_joints(self, robot_id: int, cid: int) -> Dict[str, object]:
+        joint_indices: List[int] = []
+        collision_link_indices: List[int] = []
+        gripper_joint_indices: List[int] = []
+        lower_limits: List[float] = []
+        upper_limits: List[float] = []
+        ee_link_index = -1
+        left_finger_link_index: Optional[int] = None
+        right_finger_link_index: Optional[int] = None
+
+        num_joints = p.getNumJoints(robot_id, physicsClientId=cid)
         for j in range(num_joints):
-            ji = p.getJointInfo(self.robot_id, j, physicsClientId=self.cid)
+            ji = p.getJointInfo(robot_id, j, physicsClientId=cid)
             joint_type = ji[2]
             joint_name = ji[1].decode("utf-8")
             link_name = ji[12].decode("utf-8")
@@ -131,58 +128,49 @@ class PandaGripperPlanner(GenericPlanner):
 
             if joint_type in (p.JOINT_REVOLUTE, p.JOINT_PRISMATIC):
                 if is_finger:
-                    self.gripper_joint_indices.append(j)
-                    self.collision_link_indices.append(j)
+                    gripper_joint_indices.append(j)
+                    collision_link_indices.append(j)
 
                     # Try to identify left/right finger links for grasp checking.
                     lname = link_name.lower()
                     jname = joint_name.lower()
                     if ("left" in lname) or ("left" in jname):
-                        self.left_finger_link_index = j
+                        left_finger_link_index = j
                     elif ("right" in lname) or ("right" in jname):
-                        self.right_finger_link_index = j
-                    continue
-
-                self.joint_indices.append(j)
-                ll = ji[8]
-                ul = ji[9]
-                # some manual adjustments
-                # if j==5: # the wrist joint has weird limits
-                #     ul = 4.4 # 4.8
-                # if j==1: # the second joint is better limited
-                #     ll, ul = -2.3, 2.3
-                # if j==6: # the last joint is better limited
-                #     ll, ul = -3.14, 3.14
-                if ul < ll or (ll == 0 and ul == -1): # for simplicty, ignore limits from URDF
-                    ll, ul = -3.14, 3.14
-                self.lower_limits.append(ll)
-                self.upper_limits.append(ul)
-                self.rest_pose.append(0.0)
-                self.ee_link_index = j
-                self.collision_link_indices.append(j)
+                        right_finger_link_index = j
+                else:
+                    joint_indices.append(j)
+                    ll = ji[8]
+                    ul = ji[9]
+                    if ul < ll or (ll == 0 and ul == -1): # for simplicty, ignore limits from URDF
+                        ll, ul = -3.14, 3.14
+                    lower_limits.append(ll)
+                    upper_limits.append(ul)
+                    ee_link_index = j
+                    collision_link_indices.append(j)
             elif is_finger:
-                self.collision_link_indices.append(j)
+                collision_link_indices.append(j)
 
             if link_name == "panda_grasptarget":
                 print("panda_grasptarget_hand found!")
-                self.ee_link_index = j
+                ee_link_index = j
 
         # Fallback: if we didn't find explicit left/right labels, just take the first two finger joints.
-        if self.left_finger_link_index is None or self.right_finger_link_index is None:
-            if len(self.gripper_joint_indices) >= 2:
-                self.left_finger_link_index = self.gripper_joint_indices[0]
-                self.right_finger_link_index = self.gripper_joint_indices[1]
+        if left_finger_link_index is None or right_finger_link_index is None:
+            if len(gripper_joint_indices) >= 2:
+                left_finger_link_index = gripper_joint_indices[0]
+                right_finger_link_index = gripper_joint_indices[1]
 
-    def set_robot_config(self, q: List[float]):
-        assert len(q) == self.ndof
-        for i, joint_index in enumerate(self.joint_indices):
-            p.resetJointState(
-                self.robot_id,
-                joint_index,
-                targetValue=float(q[i]),
-                targetVelocity=0.0,
-                physicsClientId=self.cid,
-            )
+        return {
+            "joint_indices": joint_indices,
+            "collision_link_indices": collision_link_indices,
+            "gripper_joint_indices": gripper_joint_indices,
+            "lower_limits": lower_limits,
+            "upper_limits": upper_limits,
+            "ee_link_index": ee_link_index,
+            "left_finger_link_index": left_finger_link_index,
+            "right_finger_link_index": right_finger_link_index,
+        }
 
     # --------- Pybullet + VAMP helpers -----------
     def pybullet_depth_to_pointcloud(
@@ -204,7 +192,7 @@ class PandaGripperPlanner(GenericPlanner):
         seg = np.asarray(seg).reshape(height, width)
 
         # valid = (seg != self.plane_id) & (seg > 0) # & (seg != self.robot_id) 
-        # 先屏蔽背景（有些环境 seg 会是 -1）
+        # 先屏蔽背景（环境 seg 是 -1）
         base_valid = (seg >= 0)
 
         # 解码 objectUniqueId / linkIndex
@@ -667,40 +655,6 @@ class PandaGripperPlanner(GenericPlanner):
         return (ok, info) if return_info else ok
 
     # ---------- utils --------------
-    def _wrap_into_limits(self, q, q_ref):
-        qn = list(q)
-        period = 2.0 * math.pi
-
-        for i in range(self.ndof):
-            lb = float(self.lower_limits[i])
-            ub = float(self.upper_limits[i])
-
-            jidx = self.joint_indices[i]
-            jtype = p.getJointInfo(self.robot_id, jidx, physicsClientId=self.cid)[2]
-
-            # prismatic: 直接 clamp
-            if jtype != p.JOINT_REVOLUTE:
-                qn[i] = min(max(qn[i], lb), ub)
-                continue
-
-            # 找所有 q + 2πk 落在 [lb,ub] 的整数 k
-            k_min = math.ceil((lb - qn[i]) / period)
-            k_max = math.floor((ub - qn[i]) / period)
-
-            if k_min <= k_max:
-                # 选一个最接近参考角（当前关节角）的解，避免跳变
-                best = None
-                best_err = 1e18
-                for k in range(k_min, k_max + 1):
-                    cand = qn[i] + period * k
-                    err = abs(cand - float(q_ref[i]))
-                    if err < best_err:
-                        best_err = err
-                        best = cand
-                qn[i] = best
-
-        return qn
-
     def move_to_pose_unified(
         self,
         pos, orn,
