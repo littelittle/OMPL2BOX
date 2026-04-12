@@ -8,7 +8,7 @@ from test_env import is_feasible
 from planners.lid_flap_planner import search_traj, search_traj_cache
 from scene import create_pedestal
 from utils.path import interpolate_joint_line
-from utils.vector import WaypointConstraint
+from utils.vector import WaypointConstraint, quat_from_normal_and_yaw
 
 
 
@@ -26,7 +26,7 @@ class MailerBoxTask(Task):
         mailerbox_yaw = self.config.get('box_yaw', 0.0)
 
         # Create the pedestal
-        create_pedestal(self.sim.cid, mailerbox_pos[:2], size_xy=(0.2, 0.2), height=mailerbox_pos[2]-0.05) # NOTE: -0.05 is only empirical
+        create_pedestal(self.sim.cid, mailerbox_pos[:2], size_xy=(0.2*self.box_scaling, 0.2*self.box_scaling), height=mailerbox_pos[2]-0.05) # NOTE: -0.05 is only empirical
 
         # Set up the mailerbox
         file_path = self.config.get("box_file_path","assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf")
@@ -89,7 +89,7 @@ class MailerBoxTask(Task):
         return self.tc_planner.solve_constraint_path(constraints, self.method)
 
 
-    def execute_plan(self, path):
+    def execute_plan(self, path, interpolate_ratio:int=45):
         candidate_yaw_trajectory = []
 
         grasp_q_goal = path[0][0]
@@ -114,11 +114,33 @@ class MailerBoxTask(Task):
         for q_goal, yaw in path:
             candidate_yaw_trajectory.append(yaw)
             q_start = self.planner.get_current_config()
-            traj = interpolate_joint_line(q_start, q_goal, 45)
+            traj = interpolate_joint_line(q_start, q_goal, interpolate_ratio)
             self.planner.execute_joint_trajectory_real(traj, N_ref=75)
             self.planner.close_gripper_to_width(target_width=0, force=1000, wait=0.5)
 
         return candidate_yaw_trajectory
+
+    def execute_plan_coarse2fine(self, path, degree_tuple_list, fine_ratio:int=5):
+        for i, (q_goal, yaw_goal) in enumerate(path[1:]):
+            q_start = self.planner.get_current_config()
+            yaw_start = path[i][1]
+            q_seed_list = interpolate_joint_line(q_start, q_goal, fine_ratio)
+            yaw_list = [yaw_start + alpha/(fine_ratio)*(yaw_goal-yaw_start) for alpha in range(1, fine_ratio+1)]
+            degree_tuple_start, degree_tuple_goal = degree_tuple_list[i], degree_tuple_list[i+1]
+            degree_tuple_slices = interpolate_joint_line(degree_tuple_start, degree_tuple_goal, fine_ratio)
+            constraints_slices = self.build_constraint_sequence(degree_tuple_slices)
+            for j, constraint in enumerate(constraints_slices):
+                orn = quat_from_normal_and_yaw(constraint.normal, yaw_list[j], constraint.horizontal, finger_axis_is_plus_y=False)
+                self.planner.set_robot_config(q_start)
+                q_goal = self.planner.solve_ik_collision_aware(constraint.pos, orn, collision=False, max_trials=1, reset=False, q_reset=q_seed_list[j])
+                if q_goal is None:
+                    # import ipdb; ipdb.set_trace()
+                    q_goal = q_seed_list[j]
+                self.planner.set_robot_config(q_start)
+                traj = interpolate_joint_line(q_start, q_goal, 9)
+                self.planner.execute_joint_trajectory_real(traj, N_ref=75)
+                self.planner.close_gripper_to_width(target_width=0, force=1000, wait=0.1)
+                q_start = self.planner.get_current_config()
 
 
     def run(self, execute=True):
@@ -134,7 +156,7 @@ class MailerBoxTask(Task):
         candidate_yaw_trajectory = []
 
         if execute:
-            candidate_yaw_trajectory = self.execute_plan(path)
+            candidate_yaw_trajectory = self.execute_plan_coarse2fine(path, degree_tuple_list)
 
 
         # Visualization for C-bundles...

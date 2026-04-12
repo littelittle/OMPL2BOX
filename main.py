@@ -42,7 +42,7 @@ def main():
         "--box_scaling", type=float, default=None, help="sacle of the box"
     )
     parser.add_argument(
-        "--box_pos", type=list, default=None, help="postion of the box"
+        "--box_pos", type=float, nargs=3, default=None, help="postion of the box"
     )
     parser.add_argument(
         "--box_yaw", type=float, default=None, help="degree of the box"

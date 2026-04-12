@@ -103,13 +103,13 @@ class TaskConstraintPlanner:
             self.q_reset_list = [
                 Q_RESET_SEEDS["home"],
                 # [0.21122026522160325, -0.44400245603577937, -0.23161109603481303, -2.743793599968008, -1.0309511129162083, 3.7166966782496167, -1.110594041641138], # this is the refined q_reset!
-                # Q_RESET_SEEDS["left_relaxed"],
-                # Q_RESET_SEEDS["right_relaxed"],
+                Q_RESET_SEEDS["left_relaxed"],
+                Q_RESET_SEEDS["right_relaxed"],
                 Q_RESET_SEEDS["left_elbow_out"],
                 Q_RESET_SEEDS["right_elbow_out"],
                 # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
             ]
-            MaxIteration = 5
+            MaxIteration = 10
 
         elif method == "Sampling":
             self.q_reset_list = [
@@ -121,7 +121,7 @@ class TaskConstraintPlanner:
                 Q_RESET_SEEDS["right_elbow_out"],
                 # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
             ]
-            self.q_reset_list += uniform_q_sampling(10)
+            self.q_reset_list += uniform_q_sampling(20)
             MaxIteration = 0
  
         start_time = time.time()
@@ -153,7 +153,12 @@ class TaskConstraintPlanner:
             if sorted_idx > 4:
                 sorted_idx = 0
 
-            new_q_rest_list = [path[selected_index][0].tolist(), path[selected_index+1][0].tolist()]
+            new_q_rest_list = [path[selected_index][0].tolist(), path[selected_index+1][0].tolist()] + uniform_q_sampling(5)
+            # new_q_rest_list = uniform_q_sampling(7) 
+            # q_noisy1 = path[selected_index][0] + np.random.normal(loc=0.0, scale=3, size=(2, 7))
+            # q_noisy2 = path[selected_index+1][0] + np.random.normal(loc=0.0, scale=3, size=(2, 7))
+            # new_q_rest_list = [self.robot.wrap_into_limits(q.tolist(), self.robot.home_config) for q in q_noisy1] + [self.robot.wrap_into_limits(q.tolist(), self.robot.home_config) for q in q_noisy2] 
+            
             self.q_reset_list = new_q_rest_list
             print(f"Iter times: {j}, Max edge cost: {max_edge_cost}, Total cost: {planned_dict['total_cost']}, worst_idx: {np.argmax(planned_dict['path_costs'])}, selected_index: {selected_index}")
             if max_edge_cost < 0.8: # set this threashold accordingly
