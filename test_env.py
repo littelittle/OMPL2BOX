@@ -31,18 +31,17 @@ def ee_axes_in_world(body_id, ee_link, cid):
     return list(x_w), list(y_w), list(z_w)
 
 def is_feasible(lid_flap_tuple: tuple, mailerbox, planner, closed, former_yaw=None, num_samples=5, q_reset=None):
+    # Get the actual grasp pose!
     pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(lid_flap_tuple[1]), lid_angle=np.deg2rad(lid_flap_tuple[0]))
 
-    # TODO: get the orn from normal and yaw, how should I determine the yaw or yaw list?
     if former_yaw is not None:
         yaws = [former_yaw]
         for i in range(1, num_samples+1):
             yaws.append(former_yaw+0.07*2.0*math.pi*i/float(max(1, num_samples)))
             yaws.append(former_yaw-0.07*2.0*math.pi*i/float(max(1, num_samples)))
-        # print("former_yawwwww")
     else:
         # in this case, do uniform sampling from [0, 2pi)
-        yaws = [2.0 * math.pi * k / float(max(1, num_samples)) for k in range(max(1, num_samples))]
+        yaws = [1.0 * math.pi * k / float(max(1, num_samples)) for k in range(max(1, num_samples))]
     
     for i, yaw in enumerate(yaws):
         orn = quat_from_normal_and_yaw(normal, yaw, horizontal, finger_axis_is_plus_y=False)

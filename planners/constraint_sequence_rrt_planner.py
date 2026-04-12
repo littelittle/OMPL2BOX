@@ -51,7 +51,7 @@ class ConstraintSequenceRRTPlanner:
         interp_step_cost_limit: float = 0.15,
         parent_neighbor_count: int = 8,
         layer_cap: int = 64,
-        target_layer_population: int = 1,
+        target_layer_population: int = 12,
         dedup_q_threshold: float = 0.15,
         dedup_yaw_threshold_deg: float = 8.0,
         local_yaw_probability: float = 0.75,

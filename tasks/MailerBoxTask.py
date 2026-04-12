@@ -4,7 +4,8 @@ from functools import partial
 from tasks import Task
 from models import MailerBox
 from planners import PandaGripperPlanner, TaskConstraintPlanner
-from test_env import is_feasible, search_traj
+from test_env import is_feasible
+from planners.lid_flap_planner import search_traj, search_traj_cache
 from scene import create_pedestal
 from utils.path import interpolate_joint_line
 from utils.vector import WaypointConstraint
@@ -50,12 +51,14 @@ class MailerBoxTask(Task):
 
         # Searching for potential feasible task space!
         # TODO: move is_feasible and search_traj to this file(maybe class)
-        is_feasible_bound = partial(is_feasible, mailerbox=self.mailerbox, planner=self.planner, former_yaw=start_yaw, closed=self.box_closed) 
-        degree_tuple_list, q_list = search_traj(start_angle_tuple, goal_angle_tuple, is_feasible_bound, num_sample=10)
+        is_feasible_bound = partial(is_feasible, mailerbox=self.mailerbox, planner=self.planner, former_yaw=np.deg2rad(90), closed=self.box_closed) 
+        # degree_tuple_list, q_list = search_traj(start_angle_tuple, goal_angle_tuple, is_feasible_bound, num_sample=10)
+        # print(f"degree_tuple_list: {degree_tuple_list}")
+        degree_tuple_list, q_list = search_traj_cache(start_angle_tuple, goal_angle_tuple, is_feasible_bound, resolution=10)
+        print(f"degree_tuple_list: {degree_tuple_list}")
+        # import ipdb; ipdb.set_trace()
         degree_tuple_list = [start_angle_tuple] + degree_tuple_list
-
         # gen_2D_map((-90, -90), (90, 90), is_feasible_bound)
-
         return degree_tuple_list
     
 

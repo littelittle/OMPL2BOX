@@ -109,7 +109,7 @@ class TaskConstraintPlanner:
                 Q_RESET_SEEDS["right_elbow_out"],
                 # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
             ]
-            MaxIteration = 50
+            MaxIteration = 5
 
         elif method == "Sampling":
             self.q_reset_list = [
@@ -121,7 +121,7 @@ class TaskConstraintPlanner:
                 Q_RESET_SEEDS["right_elbow_out"],
                 # [(a+b)/2 for a, b in zip(planner.get_current_config(), Q_RESET_SEEDS["home"])],
             ]
-            self.q_reset_list += uniform_q_sampling(20)
+            self.q_reset_list += uniform_q_sampling(10)
             MaxIteration = 0
  
         start_time = time.time()
@@ -145,7 +145,7 @@ class TaskConstraintPlanner:
         sorted_idx = 0
         for j in range(MaxIteration):
             path = planned_dict['path']
-            selected_index, selected_edge_cost = sorted(enumerate(planned_dict["path_costs"]),key=lambda x: x[1],reverse=True)[sorted_idx]
+            selected_index, selected_edge_cost = sorted(enumerate(planned_dict["path_costs"]),key=lambda x: x[1],reverse=True)[sorted_idx%len(path)]
             max_index, max_edge_cost = sorted(enumerate(planned_dict["path_costs"]),key=lambda x: x[1],reverse=True)[0]
             
             # Add some randomness ...
@@ -156,7 +156,7 @@ class TaskConstraintPlanner:
             new_q_rest_list = [path[selected_index][0].tolist(), path[selected_index+1][0].tolist()]
             self.q_reset_list = new_q_rest_list
             print(f"Iter times: {j}, Max edge cost: {max_edge_cost}, Total cost: {planned_dict['total_cost']}, worst_idx: {np.argmax(planned_dict['path_costs'])}, selected_index: {selected_index}")
-            if max_edge_cost < 0.6: # set this threashold accordingly
+            if max_edge_cost < 0.8: # set this threashold accordingly
                 break
 
             # Refining...
