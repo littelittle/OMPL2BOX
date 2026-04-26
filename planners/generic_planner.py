@@ -1,13 +1,15 @@
 import math
 import time
 import random
-from typing import Iterable, List, Optional
+from typing import Iterable, List, Optional, Literal
 
 import pybullet as p
 import numpy as np
+from frankik import FrankaKinematics, RobotType
 
 from utils.vector import _normalize, _mat_to_quat, quat_from_normal_and_axis, _cross, quat_from_normal_and_yaw
 from utils.yaw_dp import Q_RESET_SEEDS
+from utils.frankik import _make_frankik_pose
 
 class GenericPlanner:
     """
@@ -56,6 +58,10 @@ class GenericPlanner:
         self.plane_distance = plane_distance
         self.box_distance = box_distance
         self.ndof = len(self.joint_indices)
+        self.ik_backend = "pybullet"
+        self.frankik = FrankaKinematics(robot_type=RobotType.PANDA)
+        self.ik_times = 0
+        self.frankik_times = 0
 
 
     def set_robot_config(self, q: List[float]):
@@ -221,7 +227,7 @@ class GenericPlanner:
 
         return qn
 
-    def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=20, reset=True, q_reset=None):
+    def solve_ik_collision_aware(self, pos, orn, collision=True, max_trials=20, reset=True, q_reset=None, ik_backend:Literal['frankik', 'pybullet']='pybullet'):
         base_rest = q_reset if q_reset is not None else self.rest_pose[:] 
         if reset:
             q_backup = self.get_current_config()
@@ -234,22 +240,55 @@ class GenericPlanner:
                 # add some noise to the rest pose 
                 rest = [r + random.uniform(-0.1, 0.1) for r in Q_RESET_SEEDS[t%len(Q_RESET_SEEDS)]]
 
+            q_candidate = None
+            if ik_backend == "frankik":
+                pose = _make_frankik_pose(pos, orn)
+                q_candidate = self.frankik.inverse(
+                    pose,
+                    tcp_offset=self.frankik.FrankaHandTCPOffset,
+                    q0 = np.asarray(rest, dtype=float)
+                )
+                # import ipdb; ipdb.set_trace()
+                if q_candidate is not None:
+                    self.frankik_times += 1
+                    print(f"solved by frankik!: {self.frankik_times}/{self.ik_times}")
+                    
+                    q_candidate = np.asarray(q_candidate, dtype=float).tolist()
 
-            ik = p.calculateInverseKinematics(
-                self.robot_id,
-                self.ee_link_index,
-                pos,
-                orn,
-                lowerLimits=self.lower_limits,
-                upperLimits=self.upper_limits,
-                jointRanges=[u - l for l, u in zip(self.lower_limits, self.upper_limits)],
-                restPoses=rest,
-                physicsClientId=self.cid,
-                maxNumIterations=1000,
-                residualThreshold=1e-4,
-            )
-            q_candidate = list(ik[: self.ndof])
+            if q_candidate is None:
+                if reset == False:
+                    ik = p.calculateInverseKinematics(
+                        self.robot_id,
+                        self.ee_link_index,
+                        pos,
+                        orn,
+                        lowerLimits=self.lower_limits,
+                        upperLimits=self.upper_limits,
+                        jointRanges=[u - l for l, u in zip(self.lower_limits, self.upper_limits)],
+                        restPoses=rest,
+                        physicsClientId=self.cid,
+                        currentPositions= rest+[0, 0],
+                        maxNumIterations=1000,
+                        residualThreshold=1e-4,
+                    )
+                else: 
+                    ik = p.calculateInverseKinematics(
+                        self.robot_id,
+                        self.ee_link_index,
+                        pos,
+                        orn,
+                        lowerLimits=self.lower_limits,
+                        upperLimits=self.upper_limits,
+                        jointRanges=[u - l for l, u in zip(self.lower_limits, self.upper_limits)],
+                        restPoses=rest,
+                        physicsClientId=self.cid,
+                        maxNumIterations=1000,
+                        residualThreshold=1e-4,
+                    )
+                q_candidate = list(ik[: self.ndof])
+            # import ipdb; ipdb.set_trace()    
             q_candidate = self.wrap_into_limits(q_candidate, self.home_config)
+            self.ik_times += 1
 
             # check in range
             bad = False

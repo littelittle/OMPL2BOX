@@ -108,13 +108,13 @@ def summarize(results):
 def main():
     parser = argparse.ArgumentParser(description="Benchmark MailerBoxTask planning quality across Sampling, Iteration, and optional RRT runs.")
     parser.add_argument("--config", type=str, default="config/MailerBoxTask.json")
-    parser.add_argument("--methods", type=str, default="Sampling,Iteration", help="Comma-separated methods, e.g. Sampling,Iteration,RRT")
-    parser.add_argument("--scalings", type=str, default="1.0")
-    parser.add_argument("--box-positions", type=str, default="0.6:0.1:0.4")
-    parser.add_argument("--box-yaws", type=str, default="0.0")
+    parser.add_argument("--methods", type=str, default="Sampling,Iteration,Greedy", help="Comma-separated methods, e.g. Sampling,Iteration,RRT")
+    parser.add_argument("--scalings", type=str, default="1.0, 1.2")
+    parser.add_argument("--box-positions", type=str, default="0.6:0.1:0.4;0.65:0.15:0.45")
+    parser.add_argument("--box-yaws", type=str, default="0.0, 15,-15, 30,-30")
     parser.add_argument("--closed-states", type=str, default="true,false")
     parser.add_argument("--seeds", type=str, default="0")
-    parser.add_argument("--output", type=str, default="data/benchmark_sampling_vs_iteration.csv")
+    parser.add_argument("--output", type=str, default="data/benchmark_sampling_vs_iteration_vs_greedy.csv")
     args = parser.parse_args()
 
     cfg_path = Path(args.config)
@@ -139,6 +139,7 @@ def main():
         "box_closed",
         "success",
         "total_cost",
+        "total_time",
         "max_edge_cost",
         "seed",
         "error",
@@ -173,6 +174,7 @@ def main():
             "box_closed": box_closed,
             "success": bool(metrics.get("success", False)),
             "total_cost": metrics.get("total_cost"),
+            "total_time": metrics.get("time"),
             "max_edge_cost": metrics.get("max_edge_cost"),
             "seed": seed,
             "error": metrics.get("error", ""),

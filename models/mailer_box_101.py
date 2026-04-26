@@ -7,6 +7,7 @@ import random
 from utils.path import draw_point
 from scene.sim_context import make_sim
 from utils.vector import _normalize
+from perception.data_generator import analytic_flap_keypoint_pose, get_flap_keypoint_pose_from_model
 
 class MailerBox:
     def __init__(self, cid, file_path, scaling=1.0, pos=[0.0, 0.0, 0.0], yaw=0.0, closed=False):
@@ -18,6 +19,7 @@ class MailerBox:
         self.scaling = scaling
         self.pos = pos
         self.yaw = yaw
+        # import ipdb; ipdb.set_trace()
         
         self._load_urdf()
 
@@ -62,7 +64,7 @@ class MailerBox:
             globalScaling=self.scaling,
             physicsClientId=self.cid,
         )
-        print(f"[INFO]: MailerBox loads successfully from {self.file_path}")
+        # print(f"[INFO]: MailerBox loads successfully from {self.file_path}")
         self.lid_id = self._get_lid_jointId()
         self.flap_id = self._get_flap_jointId()
 
@@ -91,35 +93,52 @@ class MailerBox:
             force=0.0,          # 关键：force=0 => 不施加任何电机力矩
         )
 
-    def get_flap_keypoint_pose(self, lid_angle: float=None, flap_angle: float=None):
-        if lid_angle is None:
-            lid_angle = p.getJointState(self.body_id, self.lid_id, physicsClientId=self.cid)[0]
-        if flap_angle is None:
-            flap_angle = p.getJointState(self.body_id, self.flap_id, physicsClientId=self.cid)[0]
-        # print(lid_angle, flap_angle)
+    def _save_estimation(self, label):
+        print(label)
+        self.pred_x1, self.pred_y1, self.pred_z1 = label[0:3]
+        self.pred_yaw, self.pred_lid_angle, self.pred_flap_angle = label[3:6]
+        self.pred_lid_length = label[6]
 
-        orign_config = p.getJointStates(self.body_id, [self.lid_id, self.flap_id], physicsClientId=self.cid)
-        p.resetJointState(self.body_id, self.lid_id, targetValue=lid_angle, physicsClientId=self.cid)
-        p.resetJointState(self.body_id, self.flap_id, targetValue=flap_angle, physicsClientId=self.cid)
+    def get_flap_keypoint_pose(self, lid_angle: float=None, flap_angle: float=None, estimate:bool=True):
+        if not estimate:
+            if lid_angle is None:
+                lid_angle = p.getJointState(self.body_id, self.lid_id, physicsClientId=self.cid)[0]
+            if flap_angle is None:
+                flap_angle = p.getJointState(self.body_id, self.flap_id, physicsClientId=self.cid)[0]
+            # print(lid_angle, flap_angle)
 
-        ls = p.getLinkState(self.body_id, self.flap_id, computeForwardKinematics=True, physicsClientId=self.cid)
-        flap_pos_w, flap_orn_w = ls[4], ls[5]
-        key_local = [i * self.scaling for i in [0.13, 0.0, 0.05]] 
-        key_world, _ = p.multiplyTransforms(flap_pos_w, flap_orn_w, key_local, [0.0, 0.0, 0.0, 1.0], physicsClientId=self.cid)
-        key_world = list(key_world)
-        draw_point(key_world, size=0.1)
-        # import ipdb; ipdb.set_trace()
-        normal_local = [0.0, -1.0, 0.0]
-        horizontal_local = [1.0, 0.0, 0.0]
-        normal_world = p.multiplyTransforms([0.0, 0.0, 0.0], flap_orn_w, normal_local, [0.0, 0.0, 0.0, 1.0],  physicsClientId=self.cid)[0]
-        normal_world = _normalize(list(normal_world))
-        horizontal_world = p.multiplyTransforms([0.0, 0.0, 0.0], flap_orn_w, horizontal_local, [0.0, 0.0, 0.0, 1.0],  physicsClientId=self.cid)[0]
-        horizontal_world = _normalize(list(horizontal_world))
+            orign_config = p.getJointStates(self.body_id, [self.lid_id, self.flap_id], physicsClientId=self.cid)
+            p.resetJointState(self.body_id, self.lid_id, targetValue=lid_angle, physicsClientId=self.cid)
+            p.resetJointState(self.body_id, self.flap_id, targetValue=flap_angle, physicsClientId=self.cid)
 
-        p.resetJointState(self.body_id, self.lid_id, targetValue=orign_config[0][0], physicsClientId=self.cid)
-        p.resetJointState(self.body_id, self.flap_id, targetValue=orign_config[1][0], physicsClientId=self.cid)
+            ls = p.getLinkState(self.body_id, self.flap_id, computeForwardKinematics=True, physicsClientId=self.cid)
+            flap_pos_w, flap_orn_w = ls[4], ls[5]
+            key_local = [i * self.scaling for i in [0.13, 0.0, 0.05]] 
+            key_world, _ = p.multiplyTransforms(flap_pos_w, flap_orn_w, key_local, [0.0, 0.0, 0.0, 1.0], physicsClientId=self.cid)
+            key_world = list(key_world)
+            draw_point(key_world, size=0.1)
+            # import ipdb; ipdb.set_trace()
+            normal_local = [0.0, -1.0, 0.0]
+            horizontal_local = [1.0, 0.0, 0.0]
+            normal_world = p.multiplyTransforms([0.0, 0.0, 0.0], flap_orn_w, normal_local, [0.0, 0.0, 0.0, 1.0],  physicsClientId=self.cid)[0]
+            normal_world = _normalize(list(normal_world))
+            horizontal_world = p.multiplyTransforms([0.0, 0.0, 0.0], flap_orn_w, horizontal_local, [0.0, 0.0, 0.0, 1.0],  physicsClientId=self.cid)[0]
+            horizontal_world = _normalize(list(horizontal_world))
 
+            p.resetJointState(self.body_id, self.lid_id, targetValue=orign_config[0][0], physicsClientId=self.cid)
+            p.resetJointState(self.body_id, self.flap_id, targetValue=orign_config[1][0], physicsClientId=self.cid)
+        
+        else:
+            if lid_angle is None:
+                lid_angle = np.deg2rad(self.pred_lid_angle)
+            if flap_angle is None:
+                flap_angle = np.deg2rad(self.pred_flap_angle)
+            key_world, normal_world, horizontal_world = analytic_flap_keypoint_pose(self.pred_x1, self.pred_y1, self.pred_z1, np.deg2rad(self.pred_yaw), lid_angle, flap_angle, self.pred_lid_length)
+            draw_point(key_world, size=0.1, color=[0, 1, 0])
+        
         return key_world, normal_world, horizontal_world
+
+
 
 if __name__ == "__main__":
 

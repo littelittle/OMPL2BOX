@@ -13,10 +13,12 @@ from ompl import geometric as og
 import vamp
 # from vamp import pybullet_interface as vpb
 
+from frankik import FrankaKinematics, RobotType
 import numpy as np
 
 from utils.vector import _normalize, quat_from_normal_and_yaw
 from utils.pointcloud import pts2obj
+from utils.frankik import _make_frankik_pose
 from .generic_planner import GenericPlanner
 
 class PandaGripperPlanner(GenericPlanner):
@@ -68,6 +70,7 @@ class PandaGripperPlanner(GenericPlanner):
             velocity_gain=1.0,
         )
 
+        self.ik_backend = "frankik"
         self.gripper_joint_indices = robot_model["gripper_joint_indices"]
         self.left_finger_link_index = robot_model["left_finger_link_index"]
         self.right_finger_link_index = robot_model["right_finger_link_index"]

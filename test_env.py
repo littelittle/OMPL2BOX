@@ -30,7 +30,7 @@ def ee_axes_in_world(body_id, ee_link, cid):
     z_w = p.multiplyTransforms([0,0,0], orn_w, [0,0,1], [0,0,0,1], physicsClientId=cid)[0]
     return list(x_w), list(y_w), list(z_w)
 
-def is_feasible(lid_flap_tuple: tuple, mailerbox, planner, closed, former_yaw=None, num_samples=5, q_reset=None):
+def is_feasible(lid_flap_tuple: tuple, mailerbox, planner:PandaGripperPlanner, closed, former_yaw=None, num_samples=5, q_reset=None):
     # Get the actual grasp pose!
     pos, normal, horizontal = mailerbox.get_flap_keypoint_pose(flap_angle=np.deg2rad(lid_flap_tuple[1]), lid_angle=np.deg2rad(lid_flap_tuple[0]))
 

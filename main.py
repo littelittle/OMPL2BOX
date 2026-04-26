@@ -36,7 +36,7 @@ def main():
         "--nogui", dest="gui", action="store_false", help="Run in DIRECT mode"
     )
     parser.add_argument(
-        "--method", choices=['Sampling', "Iteration", "RRT"], default=None, help="constraint-path planning method to use"
+        "--method", choices=['Sampling', "Iteration", "RRT", "Greedy"], default=None, help="constraint-path planning method to use"
     )
     parser.add_argument(
         "--box_scaling", type=float, default=None, help="sacle of the box"
@@ -64,7 +64,8 @@ def main():
     cfg["method"] = args.method or cfg.get("method", "Iteration")
     cfg["box_scaling"] = args.box_scaling or cfg.get("box_scaling", 1.0)
     cfg["box_pos"] = args.box_pos or cfg.get("box_pos", [0.6, 0.1, 0.4])
-    cfg["box_yaw"] = args.box_yaw or cfg.get("box_yaw", 0.0)
+    cfg["box_yaw"] = args.box_yaw if args.box_yaw is not None else cfg.get("box_yaw", 0.0)
+    # import ipdb; ipdb.set_trace()
     cfg["box_file_path"] = args.box_file_path or cfg.get('box_file_path', "assets/101/mailerbox_simple_viewer_safe_flap_closed_lid.urdf")
     cfg["box_closed"] = args.box_closed if args.box_closed is not None else cfg.get('box_closed', True)    
 

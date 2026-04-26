@@ -2,7 +2,7 @@ __pycache__
 robot_sim/assets/box
 robot_sim/assets/103
 temp
-.obj
+*.obj
 robot_sim/assets/101/
 robot_sim/assets/101.zip
 assets/box
@@ -10,3 +10,5 @@ assets/103
 assets/mailerbox_simple
 exp/
 data/
+paper/
+perception/data
