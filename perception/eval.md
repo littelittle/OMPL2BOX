@@ -66,3 +66,12 @@ box_base_yaw         0.011488   0.014410  mae_deg=0.658 rmse_deg=0.826
 lid_angle            0.026619   0.032596  mae_deg=1.525 rmse_deg=1.868
 flap_angle           0.047868   0.076229  mae_deg=2.743 rmse_deg=4.368
 lid_length           0.000606   0.000801 
+
+# 10kdataset checkpoints lr 1e-4sincos 100 epoch
+x1                   0.001824   0.002385  
+y1                   0.001734   0.002262  
+z1                   0.001394   0.001798  
+box_base_yaw         0.013464   0.017626  mae_deg=0.771 rmse_deg=1.010
+lid_angle            0.021243   0.027996  mae_deg=1.217 rmse_deg=1.604
+flap_angle           0.045448   0.065275  mae_deg=2.604 rmse_deg=3.740
+lid_length           0.001617   0.002065  

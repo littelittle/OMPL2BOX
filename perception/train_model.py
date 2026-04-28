@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from perception.model import TinyPointNetRegressor, encode_labels
+from perception.model import build_model, encode_labels, normalize_points_and_labels
 
 
 class PointCloudDataset(Dataset):
@@ -41,21 +41,21 @@ def split_indices(n, val_ratio, seed):
 
 
 def compute_stats(dataset, indices):
-    points = dataset.points[indices]
-    labels = dataset.labels[indices]
-    point_mean = points.reshape(-1, 3).mean(axis=0)
-    point_std = points.reshape(-1, 3).std(axis=0) + 1e-6
+    labels = []
+    for idx in indices:
+        points_i, labels_i = dataset[int(idx)]
+        _, labels_i, _, _ = normalize_points_and_labels(points_i, labels_i, dataset.label_names)
+        labels.append(labels_i)
+    labels = np.stack(labels, axis=0)
     label_mean = labels.mean(axis=0)
     label_std = labels.std(axis=0) + 1e-6
-    return point_mean, point_std, label_mean, label_std
+    return label_mean, label_std
 
 
 class NormalizedSubset(Dataset):
-    def __init__(self, dataset, indices, point_mean, point_std, label_mean, label_std):
+    def __init__(self, dataset, indices, label_mean, label_std):
         self.dataset = dataset
         self.indices = np.asarray(indices)
-        self.point_mean = point_mean.astype(np.float32)
-        self.point_std = point_std.astype(np.float32)
         self.label_mean = label_mean.astype(np.float32)
         self.label_std = label_std.astype(np.float32)
 
@@ -64,7 +64,7 @@ class NormalizedSubset(Dataset):
 
     def __getitem__(self, idx):
         points, labels = self.dataset[int(self.indices[idx])]
-        points = (points - self.point_mean) / self.point_std
+        points, labels, _, _ = normalize_points_and_labels(points, labels, self.dataset.label_names)
         labels = (labels - self.label_mean) / self.label_std
         return torch.from_numpy(points), torch.from_numpy(labels)
 
@@ -98,6 +98,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=80)
     parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--width", type=int, default=64)
+    parser.add_argument("--model", choices=["tiny", "pointnetplus", "pointnet2"], default="tiny")
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=0)
@@ -122,9 +123,9 @@ def main():
         val_set, batch_size=args.batch_size, shuffle=False, num_workers=0, pin_memory=device == "cuda"
     )
 
-    model = TinyPointNetRegressor(out_dim=dataset.labels.shape[1], width=args.width).to(device)
+    model = build_model(args.model, out_dim=dataset.labels.shape[1], width=args.width).to(device)
     param_count = sum(p.numel() for p in model.parameters())
-    print(f"device={device} train={len(train_set)} val={len(val_set)} params={param_count}")
+    print(f"device={device} model={args.model} train={len(train_set)} val={len(val_set)} params={param_count}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
     loss_fn = nn.MSELoss()
 
@@ -141,7 +142,7 @@ def main():
         if epoch == 1 or epoch % 10 == 0 or epoch == args.epochs:
             print(f"epoch {epoch:03d} train_mse={train_loss:.6f} val_mse={val_loss:.6f}")
 
-    point_mean, point_std, label_mean, label_std = stats
+    label_mean, label_std = stats
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -149,11 +150,10 @@ def main():
             "model_state": best_state,
             "label_names": dataset.raw_label_names,
             "output_label_names": dataset.label_names,
-            "point_mean": point_mean,
-            "point_std": point_std,
+            "point_normalization": "per_sample_center_scale",
             "label_mean": label_mean,
             "label_std": label_std,
-            "model": "TinyPointNetRegressor",
+            "model": args.model,
             "width": args.width,
         },
         output,

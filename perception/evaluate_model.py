@@ -10,7 +10,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from perception.model import TinyPointNetRegressor, decode_labels, encode_labels
+from perception.model import (
+    build_model,
+    decode_labels,
+    denormalize_label_coordinates,
+    encode_labels,
+    normalize_points_and_labels,
+)
 
 
 ANGLE_LABELS = {"box_base_yaw", "lid_angle", "flap_angle"}
@@ -57,11 +63,13 @@ def load_checkpoint(path):
 
 
 def evaluate(model, loader, ckpt, device, label_names):
-    point_mean = torch.as_tensor(ckpt["point_mean"], dtype=torch.float32, device=device)
-    point_std = torch.as_tensor(ckpt["point_std"], dtype=torch.float32, device=device)
     label_mean = torch.as_tensor(ckpt["label_mean"], dtype=torch.float32, device=device)
     label_std = torch.as_tensor(ckpt["label_std"], dtype=torch.float32, device=device)
     output_label_names = ckpt.get("output_label_names", ckpt.get("label_names", label_names))
+    point_normalization = ckpt.get("point_normalization", "global_mean_std")
+    if point_normalization == "global_mean_std":
+        point_mean = torch.as_tensor(ckpt["point_mean"], dtype=torch.float32, device=device)
+        point_std = torch.as_tensor(ckpt["point_std"], dtype=torch.float32, device=device)
 
     pred_batches = []
     target_batches = []
@@ -73,15 +81,24 @@ def evaluate(model, loader, ckpt, device, label_names):
         for points, labels in loader:
             points = points.to(device)
             labels = labels.to(device)
-            points_norm = (points - point_mean) / point_std
             if labels.shape[-1] == label_mean.shape[-1]:
                 labels_out = labels
             else:
                 labels_out, _ = encode_labels(labels, label_names)
+
+            if point_normalization == "per_sample_center_scale":
+                points_norm, labels_out, center, scale = normalize_points_and_labels(
+                    points, labels_out, output_label_names
+                )
+            else:
+                points_norm = (points - point_mean) / point_std
+                center = scale = None
             labels_norm = (labels_out - label_mean) / label_std
 
             pred_norm = model(points_norm)
             pred_out = pred_norm * label_std + label_mean
+            if point_normalization == "per_sample_center_scale":
+                pred_out = denormalize_label_coordinates(pred_out, output_label_names, center, scale)
             pred, _ = decode_labels(pred_out, output_label_names)
 
             norm_mse_sum += torch.mean((pred_norm - labels_norm) ** 2, dim=1).sum().item()
@@ -124,7 +141,7 @@ def print_examples(label_names, preds, targets, num_examples):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", default="perception/data/mailerbox_poc.npz")
-    parser.add_argument("--checkpoint", default="perception/data/pointnet_10k_lr3e-4_sincos.pt")
+    parser.add_argument("--checkpoint", default="perception/data/pointnetplus_10k_lr1e-4_150.pt")
     parser.add_argument("--split", choices=["val", "train", "all"], default="val")
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=0)
@@ -145,11 +162,12 @@ def main():
 
     ckpt = load_checkpoint(args.checkpoint)
     width = int(ckpt.get("width", 64))
-    model = TinyPointNetRegressor(out_dim=len(ckpt["label_mean"]), width=width).to(device)
+    model_name = ckpt.get("model", "tiny")
+    model = build_model(model_name, out_dim=len(ckpt["label_mean"]), width=width).to(device)
     model.load_state_dict(ckpt["model_state"])
 
     preds, targets, norm_mse = evaluate(model, loader, ckpt, device, dataset.label_names)
-    print(f"device={device} split={args.split} samples={len(dataset)} width={width}")
+    print(f"device={device} model={model_name} split={args.split} samples={len(dataset)} width={width}")
     print_metrics(dataset.label_names, preds, targets, norm_mse)
     print_examples(dataset.label_names, preds, targets, args.num_examples)
 

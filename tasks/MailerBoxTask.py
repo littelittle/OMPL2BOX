@@ -12,7 +12,7 @@ from planners import PandaGripperPlanner, TaskConstraintPlanner, TaskConstraintP
 from test_env import is_feasible
 from planners.lid_flap_planner import search_traj, search_traj_cache
 from scene import create_pedestal
-from utils.path import interpolate_joint_line
+from utils.path import interpolate_joint_line, draw_point
 from utils.vector import WaypointConstraint, quat_from_normal_and_yaw
 from utils.loader import load_path
 from perception.data_generator import get_estimation
@@ -41,6 +41,7 @@ class MailerBoxTask(Task):
 
         label = get_estimation(p, self)
         self.mailerbox._save_estimation(label)
+        draw_point(label[:3], size=0.1)
 
         # Set up the robot
         if load_panda: 

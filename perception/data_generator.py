@@ -30,7 +30,12 @@ from scene import make_sim, physics_from_config
 from utils.pointcloud import pts2obj
 from utils.path import draw_point
 from perception.bullet2geo import get_gt_box_geometry_from_pybullet
-from perception.model import TinyPointNetRegressor, decode_labels
+from perception.model import (
+    build_model,
+    decode_labels,
+    denormalize_label_coordinates,
+    normalize_points_and_labels,
+)
 from perception.evaluate_model import load_checkpoint
 
 def load_config(path: str | Path):
@@ -237,21 +242,32 @@ def get_flap_keypoint_pose_from_model(model, points, ckpt, device):
     if points.ndim != 2 or points.shape[-1] != 3:
         raise ValueError(f"Expected a point cloud with shape [N, 3], got {tuple(points.shape)}")
 
-    point_mean = torch.as_tensor(ckpt["point_mean"], dtype=torch.float32, device=device)
-    point_std = torch.as_tensor(ckpt["point_std"], dtype=torch.float32, device=device)
     label_mean = torch.as_tensor(ckpt["label_mean"], dtype=torch.float32, device=device)
     label_std = torch.as_tensor(ckpt["label_std"], dtype=torch.float32, device=device)
+    output_label_names = ckpt.get("output_label_names", ckpt.get("label_names"))
+    point_normalization = ckpt.get("point_normalization", "global_mean_std")
+    if point_normalization == "global_mean_std":
+        point_mean = torch.as_tensor(ckpt["point_mean"], dtype=torch.float32, device=device)
+        point_std = torch.as_tensor(ckpt["point_std"], dtype=torch.float32, device=device)
 
     model.eval()
     with torch.no_grad():
-        points_norm = ((points - point_mean) / point_std).unsqueeze(0)
+        if point_normalization == "per_sample_center_scale":
+            points_norm, _, center, scale = normalize_points_and_labels(points)
+            points_norm = points_norm.unsqueeze(0)
+        else:
+            points_norm = ((points - point_mean) / point_std).unsqueeze(0)
+            center = scale = None
         pred_norm = model(points_norm)
         pred_out = pred_norm * label_std + label_mean
-        output_label_names = ckpt.get("output_label_names", ckpt.get("label_names"))
-        pred, _ = decode_labels(pred_out.squeeze(0), output_label_names)
+        if point_normalization == "per_sample_center_scale":
+            pred_out = denormalize_label_coordinates(pred_out.squeeze(0), output_label_names, center, scale)
+        else:
+            pred_out = pred_out.squeeze(0)
+        pred, _ = decode_labels(pred_out, output_label_names)
         return pred.cpu().numpy()
 
-def get_estimation(p, task, checkpoint:str="perception/data/pointnet_10k_lr3e-4_sincos.pt", device:str="cuda"):
+def get_estimation(p, task, checkpoint:str="perception/data/pointnetplus_10k_lr1e-4_150.pt", device:str="cuda"):
     pts = pybullet_depth_to_pointcloud(p, exclude_bodies=[task.sim.plane_id, task.pedestal_id])
     rng = np.random.default_rng(0)
     if len(pts) > 768:
@@ -262,8 +278,9 @@ def get_estimation(p, task, checkpoint:str="perception/data/pointnet_10k_lr3e-4_
 
     device = device
     ckpt = load_checkpoint(checkpoint)
-    width = int(ckpt.get("width"))
-    model = TinyPointNetRegressor(out_dim=len(ckpt["label_mean"]), width=width).to(device)
+    width = int(ckpt.get("width", 64))
+    model_name = ckpt.get("model", "tiny")
+    model = build_model(model_name, out_dim=len(ckpt["label_mean"]), width=width).to(device)
     model.load_state_dict(ckpt["model_state"])
     label = get_flap_keypoint_pose_from_model(model, pts, ckpt, device)
 
@@ -335,8 +352,9 @@ if __name__ == "__main__":
     # load model
     device = args.device
     ckpt = load_checkpoint(args.checkpoint)
-    width = int(ckpt.get("width"))
-    model = TinyPointNetRegressor(out_dim=len(ckpt["label_mean"]), width=width).to(device)
+    width = int(ckpt.get("width", 64))
+    model_name = ckpt.get("model", "tiny")
+    model = build_model(model_name, out_dim=len(ckpt["label_mean"]), width=width).to(device)
     model.load_state_dict(ckpt["model_state"])
 
     label = get_flap_keypoint_pose_from_model(model, pts, ckpt, device)
