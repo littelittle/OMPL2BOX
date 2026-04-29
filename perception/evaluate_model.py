@@ -22,8 +22,14 @@ from perception.model import (
 ANGLE_LABELS = {"box_base_yaw", "lid_angle", "flap_angle"}
 
 
+def npz_string(data, key, default=None):
+    if key not in data.files:
+        return default
+    return str(data[key].item())
+
+
 class PointCloudDataset(Dataset):
-    def __init__(self, path, indices):
+    def __init__(self, path, indices, point_normalization):
         data = np.load(path)
         self.points = data["points"].astype(np.float32)[indices]
         self.labels = data["labels"].astype(np.float32)[indices]
@@ -31,12 +37,39 @@ class PointCloudDataset(Dataset):
             self.label_names = [str(x) for x in data["label_names"].tolist()]
         else:
             self.label_names = [str(i) for i in range(self.labels.shape[1])]
+        self.data_point_normalization = npz_string(data, "point_normalization")
+
+        if point_normalization == "per_sample_center_scale":
+            if self.data_point_normalization == "per_sample_center_scale":
+                self.point_centers = data["point_centers"].astype(np.float32)[indices]
+                self.point_scales = data["point_scales"].astype(np.float32)[indices]
+            else:
+                self.points, self.labels, self.point_centers, self.point_scales = normalize_points_and_labels(
+                    self.points, self.labels, self.label_names
+                )
+                self.points = self.points.astype(np.float32)
+                self.labels = self.labels.astype(np.float32)
+                self.point_centers = self.point_centers.astype(np.float32)
+                self.point_scales = self.point_scales.astype(np.float32)
+        elif self.data_point_normalization == "per_sample_center_scale":
+            raise ValueError(
+                "This checkpoint expects raw/global-normalized point clouds, but the dataset already stores "
+                "per-sample normalized points. Use the matching checkpoint or regenerate raw data."
+            )
+        else:
+            self.point_centers = np.zeros((len(self.points), 3), dtype=np.float32)
+            self.point_scales = np.ones((len(self.points),), dtype=np.float32)
 
     def __len__(self):
         return len(self.points)
 
     def __getitem__(self, idx):
-        return torch.from_numpy(self.points[idx]), torch.from_numpy(self.labels[idx])
+        return (
+            torch.from_numpy(self.points[idx]),
+            torch.from_numpy(self.labels[idx]),
+            torch.from_numpy(self.point_centers[idx]),
+            torch.as_tensor(self.point_scales[idx], dtype=torch.float32),
+        )
 
 
 def split_indices(n, val_ratio, seed):
@@ -78,18 +111,20 @@ def evaluate(model, loader, ckpt, device, label_names):
 
     model.eval()
     with torch.no_grad():
-        for points, labels in loader:
+        for points, labels, point_centers, point_scales in loader:
             points = points.to(device)
             labels = labels.to(device)
+            point_centers = point_centers.to(device)
+            point_scales = point_scales.to(device)
             if labels.shape[-1] == label_mean.shape[-1]:
                 labels_out = labels
             else:
                 labels_out, _ = encode_labels(labels, label_names)
 
             if point_normalization == "per_sample_center_scale":
-                points_norm, labels_out, center, scale = normalize_points_and_labels(
-                    points, labels_out, output_label_names
-                )
+                points_norm = points
+                center = point_centers
+                scale = point_scales
             else:
                 points_norm = (points - point_mean) / point_std
                 center = scale = None
@@ -99,12 +134,16 @@ def evaluate(model, loader, ckpt, device, label_names):
             pred_out = pred_norm * label_std + label_mean
             if point_normalization == "per_sample_center_scale":
                 pred_out = denormalize_label_coordinates(pred_out, output_label_names, center, scale)
+                labels_for_metrics = denormalize_label_coordinates(labels_out, output_label_names, center, scale)
+            else:
+                labels_for_metrics = labels_out
             pred, _ = decode_labels(pred_out, output_label_names)
+            target, _ = decode_labels(labels_for_metrics, output_label_names)
 
             norm_mse_sum += torch.mean((pred_norm - labels_norm) ** 2, dim=1).sum().item()
             count += points.shape[0]
             pred_batches.append(pred.cpu().numpy())
-            target_batches.append(labels.cpu().numpy())
+            target_batches.append(target.cpu().numpy())
 
     preds = np.concatenate(pred_batches, axis=0)
     targets = np.concatenate(target_batches, axis=0)
@@ -140,8 +179,8 @@ def print_examples(label_names, preds, targets, num_examples):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", default="perception/data/mailerbox_poc.npz")
-    parser.add_argument("--checkpoint", default="perception/data/pointnetplus_10k_lr1e-4_150.pt")
+    parser.add_argument("--data", default="perception/data/mailerbox_keypoint_norm_100k.npz")
+    parser.add_argument("--checkpoint", default="perception/data/keypointNet_002.pt")
     parser.add_argument("--split", choices=["val", "train", "all"], default="val")
     parser.add_argument("--val_ratio", type=float, default=0.2)
     parser.add_argument("--seed", type=int, default=0)
@@ -155,15 +194,24 @@ def main():
     if device == "auto":
         device = "cpu"
 
+    ckpt = load_checkpoint(args.checkpoint)
+    point_normalization = ckpt.get("point_normalization", "global_mean_std")
     data = np.load(args.data)
     indices = select_indices(len(data["points"]), args.split, args.val_ratio, args.seed)
-    dataset = PointCloudDataset(args.data, indices)
+    dataset = PointCloudDataset(args.data, indices, point_normalization)
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0)
 
-    ckpt = load_checkpoint(args.checkpoint)
     width = int(ckpt.get("width", 64))
     model_name = ckpt.get("model", "tiny")
-    model = build_model(model_name, out_dim=len(ckpt["label_mean"]), width=width).to(device)
+    output_label_names = ckpt.get("output_label_names", ckpt.get("label_names", dataset.label_names))
+    model = build_model(
+        model_name,
+        out_dim=len(ckpt["label_mean"]),
+        width=width,
+        label_names=output_label_names,
+        label_mean=ckpt["label_mean"],
+        label_std=ckpt["label_std"],
+    ).to(device)
     model.load_state_dict(ckpt["model_state"])
 
     preds, targets, norm_mse = evaluate(model, loader, ckpt, device, dataset.label_names)

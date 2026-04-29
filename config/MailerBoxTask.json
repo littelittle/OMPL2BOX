@@ -3,7 +3,7 @@
   "robot": "panda",
   "gui": true,
   "box_pos": [0.6, 0.10, 0.4],
-  "box_yaw": 40.0,
+  "box_yaw": 0,
   "box_closed": true,
   "box_scaling": 0.95,
   "method": "Iteration",

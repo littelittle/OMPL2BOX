@@ -18,9 +18,9 @@ def get_joint_world_pose(body_id, joint_id, cid=None):
     """
     Return the world pose of a joint frame in PyBullet.
 
-    This uses getJointInfo:
-        parentFramePos = joint origin position in parent link frame
-        parentFrameOrn = joint origin orientation in parent link frame
+    PyBullet's getJointInfo parentFramePos/parentFrameOrn are expressed in
+    the parent link inertial frame. For non-base parents, this must be paired
+    with getLinkState()[0:2], not getLinkState()[4:6].
     """
     kw = _cid_kwargs(cid)
 
@@ -39,8 +39,8 @@ def get_joint_world_pose(body_id, joint_id, cid=None):
             computeForwardKinematics=True,
             **kw,
         )
-        parent_world_pos = ls[4]
-        parent_world_orn = ls[5]
+        parent_world_pos = ls[0]
+        parent_world_orn = ls[1]
 
     joint_world_pos, joint_world_orn = p.multiplyTransforms(
         parent_world_pos,

@@ -12,6 +12,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from perception.bullet2geo import get_gt_box_geometry_from_pybullet
+from perception.model import normalize_points_and_labels
 from scene import make_sim, physics_from_config
 from scene.sim_context import configure_physics, load_plane
 from tasks import MailerBoxTask
@@ -28,6 +29,29 @@ LABEL_NAMES = np.array(
         "lid_length",
     ]
 )
+KEYPOINT_LABEL_NAMES = np.concatenate(
+    [
+        LABEL_NAMES,
+        np.array(
+            [
+                "key_x",
+                "key_y",
+                "key_z",
+                "normal_x",
+                "normal_y",
+                "normal_z",
+                "horizontal_x",
+                "horizontal_y",
+                "horizontal_z",
+                "l1",
+            ]
+        ),
+    ]
+)
+LABEL_NAMES_BY_MODE = {
+    "legacy": LABEL_NAMES,
+    "keypoint": KEYPOINT_LABEL_NAMES,
+}
 
 
 def load_config(path):
@@ -90,17 +114,20 @@ def sample_cfg(base_cfg, rng):
     cfg["box_closed"] = False
     cfg["box_scaling"] = float(rng.uniform(0.9, 1.1))
     cfg["box_yaw"] = float(rng.uniform(-45.0, 45.0))
+    base_box_pos = np.asarray(base_cfg.get("box_pos", [0.6, 0.1, 0.4]), dtype=float)
+    box_pos_jitter = np.array([rng.uniform(-0.1, 0.1),rng.uniform(-0.1, 0.1),rng.uniform(-0.05, 0.05)],dtype=float)
+    cfg["box_pos"] = (base_box_pos + box_pos_jitter).tolist()
     lid_angle = float(np.deg2rad(rng.uniform(-90.0, 90.0)))
     flap_angle = float(np.deg2rad(rng.uniform(-90.0, 90.0)))
     return cfg, lid_angle, flap_angle
 
 
-def generate_sample(base_cfg, sim, rng, num_points):
+def generate_sample(base_cfg, sim, rng, num_points, label_mode="legacy"):
     cfg, lid_angle, flap_angle = sample_cfg(base_cfg, rng)
 
     p.resetSimulation(physicsClientId=sim.cid)
     configure_physics(sim.cid, physics_from_config(cfg))
-    sim.plane_id = load_plane(sim.cid)
+    # sim.plane_id = load_plane(sim.cid)
 
     task = MailerBoxTask(cfg, sim)
     task.setup_scene(load_panda=False)
@@ -116,48 +143,73 @@ def generate_sample(base_cfg, sim, rng, num_points):
         cid=box.cid,
     )
 
-    points = depth_to_pointcloud(exclude_bodies=[sim.plane_id, task.pedestal_id])
+    points = depth_to_pointcloud(exclude_bodies=[task.pedestal_id])
     points = fixed_size_points(points, num_points, rng)
 
-    label = np.array(
-        [
-            gt["x1"],
-            gt["y1"],
-            gt["z1"],
-            gt["theta0"],
-            lid_angle,
-            flap_angle,
-            0.18 * cfg["box_scaling"],
-        ],
-        dtype=np.float32,
-    )
-    return points, label
+    label_values = [
+        gt["x1"],
+        gt["y1"],
+        gt["z1"],
+        gt["theta0"],
+        lid_angle,
+        flap_angle,
+        gt["lid_length"],
+    ]
+    if label_mode == "keypoint":
+        key_pb, normal_pb, horizontal_pb, l1 = task.mailerbox.get_flap_keypoint_pose(
+            lid_angle, flap_angle, estimate=False, needZ=True
+        )
+        label_values.extend(
+            [
+                *key_pb,
+                *normal_pb,
+                *horizontal_pb,
+                l1,
+            ]
+        )
+    label = np.array(label_values, dtype=np.float32)
+    points, label, center, scale = normalize_points_and_labels(points, label, LABEL_NAMES_BY_MODE[label_mode])
+    return points.astype(np.float32), label.astype(np.float32), center.astype(np.float32), np.float32(scale)
 
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="config/MailerBoxTask.json")
-    parser.add_argument("--output", default="perception/data/mailerbox_poc.npz")
-    parser.add_argument("--num_samples", type=int, default=1000)
+    parser.add_argument("--output", default="perception/data/mailerbox_keypoint.npz")
+    parser.add_argument("--num_samples", type=int, default=10000)
     parser.add_argument("--num_points", type=int, default=768)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--label_mode", choices=LABEL_NAMES_BY_MODE, default="keypoint")
     args = parser.parse_args()
 
     rng = np.random.default_rng(args.seed)
     base_cfg = load_config(args.config)
+    label_names = LABEL_NAMES_BY_MODE[args.label_mode]
 
     points = np.empty((args.num_samples, args.num_points, 3), dtype=np.float32)
-    labels = np.empty((args.num_samples, len(LABEL_NAMES)), dtype=np.float32)
+    labels = np.empty((args.num_samples, len(label_names)), dtype=np.float32)
+    point_centers = np.empty((args.num_samples, 3), dtype=np.float32)
+    point_scales = np.empty((args.num_samples,), dtype=np.float32)
 
     sim = make_sim(gui=False, physics=physics_from_config(base_cfg), load_ground_plane=True)
     for i in range(args.num_samples):
-        points[i], labels[i] = generate_sample(base_cfg, sim, rng, args.num_points)
+        points[i], labels[i], point_centers[i], point_scales[i] = generate_sample(
+            base_cfg, sim, rng, args.num_points, label_mode=args.label_mode
+        )
         if (i + 1) % 50 == 0 or i == 0:
             print(f"generated {i + 1}/{args.num_samples}")
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(output, points=points, labels=labels, label_names=LABEL_NAMES)
+    np.savez_compressed(
+        output,
+        points=points,
+        labels=labels,
+        label_names=label_names,
+        point_centers=point_centers,
+        point_scales=point_scales,
+        point_normalization=np.array("per_sample_center_scale"),
+    )
     print(f"saved {output}")
     sys.stdout.flush()
     os._exit(0)

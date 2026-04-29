@@ -2,12 +2,14 @@ import pybullet as p
 import pybullet_data
 import time
 import numpy as np
+from typing import Literal, Optional
 import math
 import random
 from utils.path import draw_point
 from scene.sim_context import make_sim
 from utils.vector import _normalize
-from perception.data_generator import analytic_flap_keypoint_pose, get_flap_keypoint_pose_from_model
+from perception.data_generator import get_estimation
+from perception.mailerbox_geometry import analytic_flap_keypoint_pose, base_pose_from_keypoint_pose, keypoint_pose_from_base_pose
 
 class MailerBox:
     def __init__(self, cid, file_path, scaling=1.0, pos=[0.0, 0.0, 0.0], yaw=0.0, closed=False):
@@ -93,14 +95,45 @@ class MailerBox:
             force=0.0,          # 关键：force=0 => 不施加任何电机力矩
         )
 
-    def _save_estimation(self, label):
-        print(label)
+    def _refresh_estimation(self, pts, estimate:Literal['auto', 'base', 'keypoint']='auto'):
+
+        label = np.asarray(get_estimation(pts), dtype=float)
+        if len(label) < 7:
+            raise ValueError(f"Expected at least 7 estimation values, got {len(label)}")
+
         self.pred_x1, self.pred_y1, self.pred_z1 = label[0:3]
         self.pred_yaw, self.pred_lid_angle, self.pred_flap_angle = label[3:6]
         self.pred_lid_length = label[6]
 
-    def get_flap_keypoint_pose(self, lid_angle: float=None, flap_angle: float=None, estimate:bool=True):
-        if not estimate:
+        if len(label) >= 17:
+            self.pred_key_world = label[7:10]
+            self.pred_key_normal = _normalize(label[10:13])
+            self.pred_key_horizontal = _normalize(label[13:16])
+            self.pred_key_l1 = label[16]
+            self.pred_key_base_pose = base_pose_from_keypoint_pose(
+                key_pb=self.pred_key_world,
+                normal_pb=self.pred_key_normal,
+                horizontal_pb=self.pred_key_horizontal,
+                l1=self.pred_key_l1,
+                l2=self.pred_lid_length,
+                lid_angle=np.deg2rad(self.pred_lid_angle),
+                flap_angle=np.deg2rad(self.pred_flap_angle),
+                align_horizontal_sign=True,
+            )
+            draw_point(self.pred_key_world, [0,1,1])
+            draw_point(self.pred_key_base_pose['position'], [0,1,1])
+        return label
+            
+
+    def get_flap_keypoint_pose(self, lid_angle: float=None, flap_angle: float=None, estimate:Optional[Literal['gt', 'base', 'keypoint']]='keypoint', needZ:bool=False):
+        if estimate is None:
+            estimate = getattr(self, "pred_estimate", "gt")
+        if estimate is False:
+            estimate = 'gt'
+        if estimate is True:
+            estimate = getattr(self, "pred_estimate", "base")
+
+        if estimate == 'gt':
             if lid_angle is None:
                 lid_angle = p.getJointState(self.body_id, self.lid_id, physicsClientId=self.cid)[0]
             if flap_angle is None:
@@ -127,14 +160,45 @@ class MailerBox:
 
             p.resetJointState(self.body_id, self.lid_id, targetValue=orign_config[0][0], physicsClientId=self.cid)
             p.resetJointState(self.body_id, self.flap_id, targetValue=orign_config[1][0], physicsClientId=self.cid)
+            if needZ:
+                return key_world, normal_world, horizontal_world, key_local[2]
         
-        else:
+        elif estimate == 'base':
             if lid_angle is None:
                 lid_angle = np.deg2rad(self.pred_lid_angle)
             if flap_angle is None:
                 flap_angle = np.deg2rad(self.pred_flap_angle)
             key_world, normal_world, horizontal_world = analytic_flap_keypoint_pose(self.pred_x1, self.pred_y1, self.pred_z1, np.deg2rad(self.pred_yaw), lid_angle, flap_angle, self.pred_lid_length)
             draw_point(key_world, size=0.1, color=[0, 1, 0])
+        
+        elif estimate == 'keypoint':
+            if not hasattr(self, "pred_key_base_pose"):
+                raise RuntimeError(
+                    "Keypoint estimation has not been initialized. Call "
+                    "_refresh_estimation(..., estimate='auto') with a "
+                    "keypointNet checkpoint first."
+                )
+            if lid_angle is None:
+                lid_angle = np.deg2rad(self.pred_lid_angle)
+            if flap_angle is None:
+                flap_angle = np.deg2rad(self.pred_flap_angle)
+            key_world, normal_world, horizontal_world = keypoint_pose_from_base_pose(
+                base_pose=self.pred_key_base_pose,
+                l1=self.pred_key_l1,
+                l2=self.pred_lid_length,
+                lid_angle=lid_angle,
+                flap_angle=flap_angle,
+            )
+            draw_point(key_world, size=0.1, color=[1, 0, 1])
+
+        
+        else:
+            raise ValueError(f"Unknown keypoint pose estimate mode: {estimate}")
+
+        if needZ and estimate == 'keypoint':
+            return key_world, normal_world, horizontal_world, self.pred_key_l1
+        if needZ and estimate == 'base':
+            return key_world, normal_world, horizontal_world, 0.05 * self.scaling
         
         return key_world, normal_world, horizontal_world
 
@@ -162,4 +226,3 @@ if __name__ == "__main__":
             draw_point(pos, size=0.05)
             time.sleep(0.1)
         # time.sleep(0.1)
-

@@ -15,7 +15,7 @@ from scene import create_pedestal
 from utils.path import interpolate_joint_line, draw_point
 from utils.vector import WaypointConstraint, quat_from_normal_and_yaw
 from utils.loader import load_path
-from perception.data_generator import get_estimation
+from utils.pointcloud import pybullet_depth_to_pointcloud
 
 
 
@@ -39,12 +39,14 @@ class MailerBoxTask(Task):
         self.mailerbox = MailerBox(self.sim.cid, file_path=file_path, scaling=self.box_scaling, pos=mailerbox_pos, yaw=mailerbox_yaw, closed=self.box_closed)
         box_id = self.mailerbox.body_id
 
-        label = get_estimation(p, self)
-        self.mailerbox._save_estimation(label)
-        draw_point(label[:3], size=0.1)
-
         # Set up the robot
         if load_panda: 
+            # Take a depth picture before loading the panda, and feed the pointcloud to the model to predict the grasp-constraint
+            pts = pybullet_depth_to_pointcloud(p, exclude_bodies=[self.sim.plane_id, self.pedestal_id])
+            label = self.mailerbox._refresh_estimation(pts)
+            draw_point(label[:3], size=0.1)
+
+            # Now we can load the panda!
             self.planner = PandaGripperPlanner(oracle_function=self.mailerbox.get_flap_keypoint_pose, cid=self.sim.cid, box_id=box_id, plane_id=self.sim.plane_id)
             tc_planner_impl = self.config.get("task_constraint_planner", "new")
             if tc_planner_impl == "old":
@@ -83,6 +85,8 @@ class MailerBoxTask(Task):
             constraints.append(
                 WaypointConstraint(pos, normal, horizontal, i)
             )
+            # pts = pybullet_depth_to_pointcloud(p, exclude_bodies=[self.sim.plane_id, self.pedestal_id, self.planner.robot_id])
+            # label = self.mailerbox._refresh_estimation(pts)
         
         return constraints
 
